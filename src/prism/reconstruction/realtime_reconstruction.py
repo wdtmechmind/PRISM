@@ -1,12 +1,8 @@
-import os
-import sys
-
+import cv2
 import numpy as np
 
 from prism.common.timebase import pick_bracket, pick_nearest
 
-
-DEFAULT_LEGACY_RECORDING_DIR = '/opt/MVS/Samples/64/Python/General/Recording'
 
 COLOR_ORDER = ['yellow', 'blue', 'green']
 COLOR_BRG = {
@@ -21,16 +17,136 @@ COLOR_MPL = {
 }
 
 
-def _ensure_legacy_recording_path():
-    legacy_dir = os.environ.get('PRISM_LEGACY_RECORDING_DIR', DEFAULT_LEGACY_RECORDING_DIR)
-    if legacy_dir and legacy_dir not in sys.path:
-        sys.path.insert(0, legacy_dir)
+def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    lower = np.array(hsv_low, dtype=np.uint8)
+    upper = np.array(hsv_high, dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, 0.0
+
+    best = None
+    best_area = 0.0
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < min_area:
+            continue
+        if area > best_area:
+            best = c
+            best_area = area
+
+    if best is None:
+        return None, 0.0
+
+    m = cv2.moments(best)
+    if abs(m['m00']) < 1e-9:
+        return None, 0.0
+
+    cx = float(m['m10'] / m['m00'])
+    cy = float(m['m01'] / m['m00'])
+    return (cx, cy), best_area
 
 
-def _legacy_led_module():
-    _ensure_legacy_recording_path()
-    import LedRigidBody6D4CamHSV3Color as legacy_led
-    return legacy_led
+def create_kalman():
+    kf = cv2.KalmanFilter(6, 3)
+    kf.transitionMatrix = np.eye(6, dtype=np.float32)
+    kf.measurementMatrix = np.zeros((3, 6), dtype=np.float32)
+    kf.measurementMatrix[0, 0] = 1.0
+    kf.measurementMatrix[1, 1] = 1.0
+    kf.measurementMatrix[2, 2] = 1.0
+    kf.processNoiseCov = np.eye(6, dtype=np.float32) * 1e-4
+    kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 5e-4
+    kf.errorCovPost = np.eye(6, dtype=np.float32)
+    return kf
+
+
+def update_transition_dt(kf, dt):
+    dt = max(1e-3, float(dt))
+    f = np.eye(6, dtype=np.float32)
+    f[0, 3] = dt
+    f[1, 4] = dt
+    f[2, 5] = dt
+    kf.transitionMatrix = f
+
+
+def triangulate_multi_view(observations, cameras):
+    if len(observations) < 2:
+        return None, None
+
+    A_rows = []
+    used = []
+    und_points = {}
+
+    for cam_idx, (u, v) in observations.items():
+        cam = cameras[cam_idx]
+        uv = np.array([[[u, v]]], dtype=np.float64)
+        und = cv2.undistortPoints(uv, cam['K'], cam['D']).reshape(2)
+        und_points[cam_idx] = und
+
+        p = np.hstack([cam['R'], cam['t'].reshape(3, 1)])
+        A_rows.append(und[0] * p[2, :] - p[0, :])
+        A_rows.append(und[1] * p[2, :] - p[1, :])
+        used.append(cam_idx)
+
+    A = np.asarray(A_rows, dtype=np.float64)
+    if A.shape[0] < 4:
+        return None, None
+
+    _, _, vt = np.linalg.svd(A)
+    x_h = vt[-1, :]
+    if abs(x_h[3]) < 1e-12:
+        return None, None
+
+    x = x_h[:3] / x_h[3]
+    errs = {}
+    for cam_idx in used:
+        cam = cameras[cam_idx]
+        xc = cam['R'] @ x.reshape(3, 1) + cam['t'].reshape(3, 1)
+        z = float(xc[2, 0])
+        if z <= 1e-9:
+            return None, None
+        pred = np.array([xc[0, 0] / z, xc[1, 0] / z], dtype=np.float64)
+        errs[cam_idx] = float(np.linalg.norm(pred - und_points[cam_idx]))
+
+    return x, errs
+
+
+def robust_triangulate(observations, cameras, max_norm_reproj_error):
+    if len(observations) < 2:
+        return None, None
+
+    x, errs = triangulate_multi_view(observations, cameras)
+    if x is None:
+        return None, None
+
+    max_err = max(errs.values()) if errs else 1e9
+    if max_err <= max_norm_reproj_error or len(observations) == 2:
+        return x, errs
+
+    best = (x, errs)
+    best_max = max_err
+    keys = sorted(observations.keys())
+    for drop in keys:
+        sub_obs = {k: v for k, v in observations.items() if k != drop}
+        if len(sub_obs) < 2:
+            continue
+        x_sub, errs_sub = triangulate_multi_view(sub_obs, cameras)
+        if x_sub is None or not errs_sub:
+            continue
+        m = max(errs_sub.values())
+        if m < best_max:
+            best = (x_sub, errs_sub)
+            best_max = m
+
+    if best_max > max_norm_reproj_error:
+        return None, None
+    return best
 
 
 def detect_all_colors(frame, hsv_cfg, min_area, cache):
@@ -38,20 +154,18 @@ def detect_all_colors(frame, hsv_cfg, min_area, cache):
     if key in cache:
         return cache[key]
 
-    legacy_led = _legacy_led_module()
     res = {}
     for name in COLOR_ORDER:
         low, high = hsv_cfg[name]
-        pt, _ = legacy_led.detect_led_hsv(frame, low, high, min_area)
+        pt, _ = detect_led_hsv(frame, low, high, min_area)
         res[name] = pt
     cache[key] = res
     return res
 
 
 def make_track_state():
-    legacy_led = _legacy_led_module()
     return {
-        'kalman': {name: legacy_led.create_kalman() for name in COLOR_ORDER},
+        'kalman': {name: create_kalman() for name in COLOR_ORDER},
         'state_inited': {name: False for name in COLOR_ORDER},
         'pred_miss_count': {name: 0 for name in COLOR_ORDER},
         'last_point_valid': {name: False for name in COLOR_ORDER},
@@ -60,7 +174,6 @@ def make_track_state():
 
 
 def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writer, paused):
-    legacy_led = _legacy_led_module()
     kalman = st['kalman']
     state_inited = st['state_inited']
     pred_miss_count = st['pred_miss_count']
@@ -69,7 +182,7 @@ def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writ
 
     preds = {}
     for name in COLOR_ORDER:
-        legacy_led.update_transition_dt(kalman[name], dt)
+        update_transition_dt(kalman[name], dt)
         preds[name] = kalman[name].predict().reshape(-1)
 
     mode_by_color = {name: 'none' for name in COLOR_ORDER}
@@ -85,7 +198,7 @@ def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writ
             x_meas = None
             err_dict = None
             if len(observations) >= 2:
-                x_meas, err_dict = legacy_led.robust_triangulate(observations, cameras, args.max_norm_reproj_error)
+                x_meas, err_dict = robust_triangulate(observations, cameras, args.max_norm_reproj_error)
 
             if x_meas is not None:
                 z = np.asarray(x_meas, dtype=np.float32).reshape(3, 1)
@@ -110,7 +223,7 @@ def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writ
                     mode_by_color[name] = 'lost'
                     point_by_color[name] = None
                     state_inited[name] = False
-                    kalman[name] = legacy_led.create_kalman()
+                    kalman[name] = create_kalman()
                     pred_miss_count[name] = 0
 
     for name in COLOR_ORDER:

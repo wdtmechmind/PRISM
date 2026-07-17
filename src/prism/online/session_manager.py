@@ -6,16 +6,15 @@ import time
 
 import cv2
 
-from CharucoCapture4Usb import (
+from prism.common.timebase import pick_nearest
+from prism.devices.cameras.highspeed_camera import HikCaptureThread
+from prism.devices.cameras.mvs_camera import (
+    MvCamera,
     UsbCameraGrabber,
     compare_and_check_readbacks,
     enumerate_usb_devices,
     parse_indices,
 )
-from MvCameraControl_class import MvCamera
-
-from prism.common.timebase import pick_nearest
-from prism.devices.cameras.highspeed_camera import HikCaptureThread
 from prism.devices.cameras.realsense_camera import (
     RSCaptureThread,
     RealSenseColorGrabber,
@@ -23,10 +22,10 @@ from prism.devices.cameras.realsense_camera import (
     load_rs_intrinsics,
 )
 from prism.online.display_server import draw_preview
+from prism.online.trajectory_plotter import Live3DPlotter
 from prism.reconstruction.calibration import (
     build_corrected_transform,
     get_camera_centers_world,
-    get_live_3d_plotter_class,
     load_calibration,
 )
 from prism.reconstruction.realtime_reconstruction import (
@@ -308,7 +307,6 @@ class SessionManager(object):
 
     def run_loop(self):
         cv2.namedWindow('DexHand HighFps Capture', cv2.WINDOW_NORMAL)
-        Live3DPlotter = get_live_3d_plotter_class()
         self.plotter3d = Live3DPlotter(
             enabled=self.use_viz_3d,
             camera_centers=self.camera_centers,
