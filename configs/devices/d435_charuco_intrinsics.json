@@ -1,0 +1,79 @@
+{
+  "camera": "Intel RealSense D435 (color)",
+  "serial": "317422071851",
+  "image_size": [
+    1280,
+    720
+  ],
+  "intrinsics": {
+    "K": [
+      [
+        901.9468597790961,
+        0.0,
+        645.2865785090204
+      ],
+      [
+        0.0,
+        902.472105956641,
+        380.20842624511744
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "D": [
+      0.13871183692291497,
+      -0.4523419210947094,
+      0.0010719446419901225,
+      0.00016217335057084828,
+      0.4269581435553072
+    ],
+    "model": "opencv"
+  },
+  "quality": {
+    "rms": 0.22788515244019947,
+    "mean_reproj_px": 0.18789285953475235,
+    "num_valid_images": 30
+  },
+  "board": {
+    "squares_x": 12,
+    "squares_y": 9,
+    "square_length_mm": 15.0,
+    "marker_length_mm": 11.25,
+    "aruco_dict": "DICT_5X5_1000"
+  },
+  "used_images": [
+    "img_0001.png",
+    "img_0002.png",
+    "img_0003.png",
+    "img_0004.png",
+    "img_0005.png",
+    "img_0006.png",
+    "img_0007.png",
+    "img_0008.png",
+    "img_0009.png",
+    "img_0010.png",
+    "img_0011.png",
+    "img_0012.png",
+    "img_0013.png",
+    "img_0014.png",
+    "img_0015.png",
+    "img_0016.png",
+    "img_0017.png",
+    "img_0018.png",
+    "img_0019.png",
+    "img_0020.png",
+    "img_0021.png",
+    "img_0022.png",
+    "img_0023.png",
+    "img_0024.png",
+    "img_0025.png",
+    "img_0026.png",
+    "img_0027.png",
+    "img_0028.png",
+    "img_0029.png",
+    "img_0030.png"
+  ]
+}

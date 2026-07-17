@@ -1,0 +1,55 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Packaging and virtual environments
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# Large collected datasets and generated outputs
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Recorded videos and generated sensor logs
+*.mp4
+*.mkv
+*.avi
+*.mov
+*_timestamps.csv
+fps_log.csv
+trajectory_*.csv
+time_alignment_log.csv
+
+# Local native SDK/build artifacts
+*.so
+*.dll
+*.dylib
