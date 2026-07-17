@@ -1,0 +1,62 @@
+# PRISM online collection defaults.
+# CLI flags override these values, for example: --task-name grasp-demo --num-trials 20
+
+task_name: dexhand_task
+num_trials: 0
+output_dir: data/raw
+hand_generation: none
+post_process: ask
+rpi_port: ''
+sdk_script: ''
+feedback_port: ''
+
+calib_json: /mnt/projects-8tb/PRISM/configs/devices/charuco_4cam_result.json
+
+hik_exposure_us: 3000.0
+hik_gain: 0.0
+hik_frame_rate: 300.0
+rec_brightness_alpha: 2.0
+rec_brightness_beta: 20.0
+strict_param_check: 'y'
+param_tolerance: 0.001
+writer_queue: 512
+
+rs_serial: ''
+rs_calib_json: /mnt/projects-8tb/PRISM/configs/devices/d435_charuco_intrinsics.json
+rs_undistort: 'y'
+rs_width: 1280
+rs_height: 720
+rs_fps: 30
+rs_auto_exposure: 'n'
+rs_exposure: 260.0
+rs_gain: 64.0
+rs_brightness: 0.0
+
+y_h_low: 15
+y_s_low: 80
+y_v_low: 80
+y_h_high: 40
+y_s_high: 255
+y_v_high: 255
+
+b_h_low: 90
+b_s_low: 80
+b_v_low: 80
+b_h_high: 135
+b_s_high: 255
+b_v_high: 255
+
+g_h_low: 40
+g_s_low: 60
+g_v_low: 60
+g_h_high: 95
+g_s_high: 255
+g_v_high: 255
+
+min_area: 10.0
+max_norm_reproj_error: 0.015
+max_traj_points: 5000
+max_predict_frames: 6
+viz_3d: 'y'
+track_every: 1
+frame_buffer: 15

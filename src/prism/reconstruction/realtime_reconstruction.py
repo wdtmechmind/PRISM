@@ -17,6 +17,82 @@ COLOR_MPL = {
 }
 
 
+def normalize_vec(vec):
+    vec = np.asarray(vec, dtype=np.float64).reshape(3)
+    norm = np.linalg.norm(vec)
+    if norm < 1e-12:
+        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    return vec / norm
+
+
+def matrix_to_rpy_zyx(rot):
+    rot = np.asarray(rot, dtype=np.float64).reshape(3, 3)
+    sy = -float(rot[2, 0])
+    sy = max(-1.0, min(1.0, sy))
+    pitch = float(np.arcsin(sy))
+    cp = float(np.cos(pitch))
+
+    if abs(cp) > 1e-8:
+        roll = float(np.arctan2(rot[2, 1], rot[2, 2]))
+        yaw = float(np.arctan2(rot[1, 0], rot[0, 0]))
+    else:
+        roll = 0.0
+        yaw = float(np.arctan2(-rot[0, 1], rot[1, 1]))
+
+    return roll, pitch, yaw
+
+
+def build_body_model(world_points_by_color):
+    py = np.asarray(world_points_by_color['yellow'], dtype=np.float64).reshape(3)
+    pb = np.asarray(world_points_by_color['blue'], dtype=np.float64).reshape(3)
+    pg = np.asarray(world_points_by_color['green'], dtype=np.float64).reshape(3)
+
+    origin = (py + pb + pg) / 3.0
+    ex = normalize_vec(pb - py)
+    vg = pg - py
+    ez_raw = np.cross(ex, vg)
+    if np.linalg.norm(ez_raw) < 1e-10:
+        return None
+    ez = normalize_vec(ez_raw)
+    ey = normalize_vec(np.cross(ez, ex))
+
+    rot_wb = np.column_stack([ex, ey, ez])
+    model = {}
+    for name in COLOR_ORDER:
+        pw = np.asarray(world_points_by_color[name], dtype=np.float64).reshape(3)
+        model[name] = rot_wb.T @ (pw - origin)
+
+    return {
+        'model_points': model,
+        'init_origin': origin,
+        'init_rot_wb': rot_wb,
+    }
+
+
+def estimate_pose_from_model(model_points_by_color, observed_points_by_color):
+    names = [name for name in COLOR_ORDER if name in model_points_by_color and name in observed_points_by_color]
+    if len(names) < 3:
+        return None
+
+    model_points = np.asarray([model_points_by_color[name] for name in names], dtype=np.float64)
+    observed_points = np.asarray([observed_points_by_color[name] for name in names], dtype=np.float64)
+
+    model_center = np.mean(model_points, axis=0)
+    observed_center = np.mean(observed_points, axis=0)
+    model_zero = model_points - model_center
+    observed_zero = observed_points - observed_center
+
+    H = model_zero.T @ observed_zero
+    U, _, Vt = np.linalg.svd(H)
+    rot = Vt.T @ U.T
+    if np.linalg.det(rot) < 0.0:
+        Vt[-1, :] *= -1.0
+        rot = Vt.T @ U.T
+
+    trans = observed_center - rot @ model_center
+    return rot, trans
+
+
 def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     lower = np.array(hsv_low, dtype=np.uint8)

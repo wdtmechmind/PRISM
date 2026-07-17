@@ -19,6 +19,29 @@
 ### 2.1 启动阶段
 
 1. 操作者运行在线采集脚本，并指定任务名称、采集条数、保存目录、设备配置等参数。
+
+   当前 prism-native 在线采集入口示例：
+
+   ```bash
+   scripts/collect_task.sh \
+     --task-name grasp-demo \
+     --num-trials 20 \
+     --output-dir data/raw \
+     --calib-json configs/devices/charuco_4cam_result.json \
+     --hand-generation none \
+     --post-process ask
+   ```
+
+   在线采集默认参数放在 `configs/collection/default_online.yaml`。长期稳定的默认值建议改这个配置文件；单次实验临时变化建议继续通过命令行参数覆盖。例如，配置文件里可以写 `hik_frame_rate: 300.0`，某次实验可以临时运行 `--hik-frame-rate 250`。
+
+   也可以显式指定另一份配置：
+
+   ```bash
+   scripts/collect_task.sh --config configs/collection/default_online.yaml
+   ```
+
+   RPi 指令读取、灵巧手 SDK 转发和灵巧手反馈记录接口暂未实现。当前 CLI 仅保留 `--rpi-port`、`--sdk-script`、`--feedback-port` 作为空占位参数，每条 trial 下会预留空的 `hand/rpi_commands.csv`、`hand/sdk_commands.csv` 和 `hand/hand_feedback.csv`。
+
 2. 系统初始化以下设备和服务：
    - 4 个高速相机。
    - 1 个 Intel RealSense 相机。

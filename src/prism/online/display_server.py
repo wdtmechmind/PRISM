@@ -5,7 +5,7 @@ from prism.reconstruction.realtime_reconstruction import COLOR_BRG, COLOR_ORDER
 
 
 def draw_preview(hik_latest, rs_latest, observations_by_color, hik_fps, rs_fps,
-                 recording, segment_id, elapsed_sec, target_w=480):
+                 recording, trial_id, elapsed_sec, target_w=480):
     cells = []
     for i in range(4):
         img = hik_latest[i]
@@ -46,7 +46,7 @@ def draw_preview(hik_latest, rs_latest, observations_by_color, hik_fps, rs_fps,
     bottom = np.hstack([rs_cell, np.zeros_like(rs_cell)])
     grid = np.vstack([top, mid, bottom])
 
-    rec_txt = 'REC seg%03d %.1fs' % (segment_id, elapsed_sec) if recording else 'IDLE (SPACE to record)'
+    rec_txt = 'REC trial_%06d %.1fs' % (trial_id, elapsed_sec) if recording else 'IDLE (SPACE to start trial)'
     rec_color = (0, 0, 255) if recording else (200, 200, 200)
     cv2.putText(grid, rec_txt, (10, grid.shape[0] - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, rec_color, 2, cv2.LINE_AA)

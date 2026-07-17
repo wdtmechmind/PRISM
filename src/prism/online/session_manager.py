@@ -5,7 +5,10 @@ import os
 import time
 
 import cv2
+import numpy as np
 
+from prism.common import console
+from prism.common.config import load_yaml_config, merge_defaults
 from prism.common.timebase import pick_nearest
 from prism.devices.cameras.highspeed_camera import HikCaptureThread
 from prism.devices.cameras.mvs_camera import (
@@ -32,11 +35,19 @@ from prism.reconstruction.realtime_reconstruction import (
     COLOR_BRG,
     COLOR_ORDER,
     advance_tracking,
+    build_body_model,
     build_observations_interp,
     build_observations_nearest,
+    estimate_pose_from_model,
     make_track_state,
+    matrix_to_rpy_zyx,
 )
-from prism.recording.metadata_writer import resolve_output_root
+from prism.recording.metadata_writer import (
+    resolve_output_root,
+    touch_placeholder_hand_logs,
+    write_task_metadata,
+    write_trial_metadata,
+)
 from prism.recording.video_recorder import VideoSink
 
 
@@ -44,65 +55,154 @@ def parse_yes_no(raw_text):
     return raw_text.strip().lower() in ['y', 'yes', '1', 'true']
 
 
-def build_arg_parser():
+DEFAULT_ONLINE_CONFIG = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'configs', 'collection', 'default_online.yaml')
+)
+
+DEFAULT_CLI_VALUES = {
+    'task_name': 'dexhand_task',
+    'num_trials': 0,
+    'output_dir': '~/prism_data/raw',
+    'hand_generation': 'none',
+    'post_process': 'ask',
+    'rpi_port': '',
+    'sdk_script': '',
+    'feedback_port': '',
+    'calib_json': '',
+    'hik_exposure_us': 3000.0,
+    'hik_gain': 0.0,
+    'hik_frame_rate': 300.0,
+    'rec_brightness_alpha': 2.0,
+    'rec_brightness_beta': 20.0,
+    'strict_param_check': 'y',
+    'param_tolerance': 1e-3,
+    'writer_queue': 512,
+    'rs_serial': '',
+    'rs_calib_json': '',
+    'rs_undistort': 'y',
+    'rs_width': 1280,
+    'rs_height': 720,
+    'rs_fps': 30,
+    'rs_auto_exposure': 'n',
+    'rs_exposure': 260.0,
+    'rs_gain': 64.0,
+    'rs_brightness': 0.0,
+    'y_h_low': 15,
+    'y_s_low': 80,
+    'y_v_low': 80,
+    'y_h_high': 40,
+    'y_s_high': 255,
+    'y_v_high': 255,
+    'b_h_low': 90,
+    'b_s_low': 80,
+    'b_v_low': 80,
+    'b_h_high': 135,
+    'b_s_high': 255,
+    'b_v_high': 255,
+    'g_h_low': 40,
+    'g_s_low': 60,
+    'g_v_low': 60,
+    'g_h_high': 95,
+    'g_s_high': 255,
+    'g_v_high': 255,
+    'min_area': 10.0,
+    'max_norm_reproj_error': 0.015,
+    'max_traj_points': 5000,
+    'max_predict_frames': 6,
+    'viz_3d': 'y',
+    'rigid_axis_len': 0.03,
+    'track_every': 1,
+    'frame_buffer': 15,
+}
+
+
+def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
+    defaults = defaults or DEFAULT_CLI_VALUES
     parser = argparse.ArgumentParser(
-        description='PRISM native multi-threaded capture: 4 Hik cameras (continuous) + RealSense'
+        description='PRISM online collection pipeline: task -> multiple trials -> optional post-processing',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument('--calib-json', type=str, required=True, help='path to charuco_4cam_result.json')
-    parser.add_argument('--output-dir', type=str, default='~/mvs_dexhand_capture_mt', help='output root folder')
 
-    parser.add_argument('--hik-exposure-us', type=float, default=3000.0)
-    parser.add_argument('--hik-gain', type=float, default=0.0)
-    parser.add_argument('--hik-frame-rate', type=float, default=300.0,
-                        help='requested Hik acquisition fps (continuous mode); real fps shown live')
-    parser.add_argument('--rec-brightness-alpha', type=float, default=2.0)
-    parser.add_argument('--rec-brightness-beta', type=float, default=20.0)
-    parser.add_argument('--strict-param-check', type=str, default='y')
-    parser.add_argument('--param-tolerance', type=float, default=1e-3)
-    parser.add_argument('--writer-queue', type=int, default=512,
-                        help='max buffered frames per stream before dropping (protects capture cadence)')
+    pipeline = parser.add_argument_group('online task pipeline')
+    pipeline.add_argument('--config', type=str, default=config_path,
+                          help='YAML config file used for CLI defaults; command-line flags override it')
+    pipeline.add_argument('--task-name', type=str, default=defaults['task_name'],
+                          help='task name used in the raw data folder name and metadata')
+    pipeline.add_argument('-n', '--num-trials', type=int, default=defaults['num_trials'],
+                          help='planned number of trials; 0 means unlimited until q/ESC')
+    pipeline.add_argument('--output-dir', type=str, default=defaults['output_dir'],
+                          help='raw task output root folder')
+    pipeline.add_argument('--hand-generation', type=str, default=defaults['hand_generation'], choices=['none', 'gen2', 'gen3'],
+                          help='hand model metadata only; RPi/SDK/feedback integration is not implemented yet')
+    pipeline.add_argument('--post-process', type=str, default=defaults['post_process'], choices=['ask', 'now', 'later'],
+                          help='what to do after online collection finishes')
+    pipeline.add_argument('--rpi-port', type=str, default=defaults['rpi_port'],
+                          help='reserved for future RPi serial command input; currently left blank')
+    pipeline.add_argument('--sdk-script', type=str, default=defaults['sdk_script'],
+                          help='reserved for future dexterous-hand SDK command bridge; currently left blank')
+    pipeline.add_argument('--feedback-port', type=str, default=defaults['feedback_port'],
+                          help='reserved for future hand feedback input; currently left blank')
 
-    parser.add_argument('--rs-serial', type=str, default='')
-    parser.add_argument('--rs-calib-json', type=str, default='')
-    parser.add_argument('--rs-undistort', type=str, default='y')
-    parser.add_argument('--rs-width', type=int, default=1280)
-    parser.add_argument('--rs-height', type=int, default=720)
-    parser.add_argument('--rs-fps', type=int, default=30)
-    parser.add_argument('--rs-auto-exposure', type=str, default='n')
-    parser.add_argument('--rs-exposure', type=float, default=260.0)
-    parser.add_argument('--rs-gain', type=float, default=64.0)
-    parser.add_argument('--rs-brightness', type=float, default=0.0)
+    device = parser.add_argument_group('device configuration')
+    device.add_argument('--calib-json', type=str, default=defaults['calib_json'], help='path to charuco_4cam_result.json')
 
-    parser.add_argument('--y-h-low', type=int, default=15)
-    parser.add_argument('--y-s-low', type=int, default=80)
-    parser.add_argument('--y-v-low', type=int, default=80)
-    parser.add_argument('--y-h-high', type=int, default=40)
-    parser.add_argument('--y-s-high', type=int, default=255)
-    parser.add_argument('--y-v-high', type=int, default=255)
+    hik = parser.add_argument_group('Hik high-speed cameras')
+    hik.add_argument('--hik-exposure-us', type=float, default=defaults['hik_exposure_us'])
+    hik.add_argument('--hik-gain', type=float, default=defaults['hik_gain'])
+    hik.add_argument('--hik-frame-rate', type=float, default=defaults['hik_frame_rate'],
+                     help='requested Hik acquisition fps (continuous mode); real fps shown live')
+    hik.add_argument('--rec-brightness-alpha', type=float, default=defaults['rec_brightness_alpha'])
+    hik.add_argument('--rec-brightness-beta', type=float, default=defaults['rec_brightness_beta'])
+    hik.add_argument('--strict-param-check', type=str, default=defaults['strict_param_check'])
+    hik.add_argument('--param-tolerance', type=float, default=defaults['param_tolerance'])
+    hik.add_argument('--writer-queue', type=int, default=defaults['writer_queue'],
+                     help='max buffered frames per stream before dropping (protects capture cadence)')
 
-    parser.add_argument('--b-h-low', type=int, default=90)
-    parser.add_argument('--b-s-low', type=int, default=80)
-    parser.add_argument('--b-v-low', type=int, default=80)
-    parser.add_argument('--b-h-high', type=int, default=135)
-    parser.add_argument('--b-s-high', type=int, default=255)
-    parser.add_argument('--b-v-high', type=int, default=255)
+    rs = parser.add_argument_group('RealSense camera')
+    rs.add_argument('--rs-serial', type=str, default=defaults['rs_serial'])
+    rs.add_argument('--rs-calib-json', type=str, default=defaults['rs_calib_json'])
+    rs.add_argument('--rs-undistort', type=str, default=defaults['rs_undistort'])
+    rs.add_argument('--rs-width', type=int, default=defaults['rs_width'])
+    rs.add_argument('--rs-height', type=int, default=defaults['rs_height'])
+    rs.add_argument('--rs-fps', type=int, default=defaults['rs_fps'])
+    rs.add_argument('--rs-auto-exposure', type=str, default=defaults['rs_auto_exposure'])
+    rs.add_argument('--rs-exposure', type=float, default=defaults['rs_exposure'])
+    rs.add_argument('--rs-gain', type=float, default=defaults['rs_gain'])
+    rs.add_argument('--rs-brightness', type=float, default=defaults['rs_brightness'])
 
-    parser.add_argument('--g-h-low', type=int, default=40)
-    parser.add_argument('--g-s-low', type=int, default=60)
-    parser.add_argument('--g-v-low', type=int, default=60)
-    parser.add_argument('--g-h-high', type=int, default=95)
-    parser.add_argument('--g-s-high', type=int, default=255)
-    parser.add_argument('--g-v-high', type=int, default=255)
+    tracking = parser.add_argument_group('online trajectory tracking')
+    tracking.add_argument('--y-h-low', type=int, default=defaults['y_h_low'])
+    tracking.add_argument('--y-s-low', type=int, default=defaults['y_s_low'])
+    tracking.add_argument('--y-v-low', type=int, default=defaults['y_v_low'])
+    tracking.add_argument('--y-h-high', type=int, default=defaults['y_h_high'])
+    tracking.add_argument('--y-s-high', type=int, default=defaults['y_s_high'])
+    tracking.add_argument('--y-v-high', type=int, default=defaults['y_v_high'])
 
-    parser.add_argument('--min-area', type=float, default=10.0)
-    parser.add_argument('--max-norm-reproj-error', type=float, default=0.015)
-    parser.add_argument('--max-traj-points', type=int, default=5000)
-    parser.add_argument('--max-predict-frames', type=int, default=6)
-    parser.add_argument('--viz-3d', type=str, default='y')
-    parser.add_argument('--track-every', type=int, default=1,
-                        help='run LED tracking every N preview iterations (raise to lighten CPU)')
-    parser.add_argument('--frame-buffer', type=int, default=15,
-                        help='per-camera timestamped frame buffer length for time-based association')
+    tracking.add_argument('--b-h-low', type=int, default=defaults['b_h_low'])
+    tracking.add_argument('--b-s-low', type=int, default=defaults['b_s_low'])
+    tracking.add_argument('--b-v-low', type=int, default=defaults['b_v_low'])
+    tracking.add_argument('--b-h-high', type=int, default=defaults['b_h_high'])
+    tracking.add_argument('--b-s-high', type=int, default=defaults['b_s_high'])
+    tracking.add_argument('--b-v-high', type=int, default=defaults['b_v_high'])
+
+    tracking.add_argument('--g-h-low', type=int, default=defaults['g_h_low'])
+    tracking.add_argument('--g-s-low', type=int, default=defaults['g_s_low'])
+    tracking.add_argument('--g-v-low', type=int, default=defaults['g_v_low'])
+    tracking.add_argument('--g-h-high', type=int, default=defaults['g_h_high'])
+    tracking.add_argument('--g-s-high', type=int, default=defaults['g_s_high'])
+    tracking.add_argument('--g-v-high', type=int, default=defaults['g_v_high'])
+
+    tracking.add_argument('--min-area', type=float, default=defaults['min_area'])
+    tracking.add_argument('--max-norm-reproj-error', type=float, default=defaults['max_norm_reproj_error'])
+    tracking.add_argument('--max-traj-points', type=int, default=defaults['max_traj_points'])
+    tracking.add_argument('--max-predict-frames', type=int, default=defaults['max_predict_frames'])
+    tracking.add_argument('--viz-3d', type=str, default=defaults['viz_3d'])
+    tracking.add_argument('--rigid-axis-len', type=float, default=defaults['rigid_axis_len'],
+                          help='axis length in meters for rigid-body frame visualization')
+    tracking.add_argument('--track-every', type=int, default=defaults['track_every'],
+                          help='run LED tracking every N preview iterations (raise to lighten CPU)')
+    tracking.add_argument('--frame-buffer', type=int, default=defaults['frame_buffer'],
+                          help='per-camera timestamped frame buffer length for time-based association')
     return parser
 
 
@@ -113,6 +213,7 @@ class SessionManager(object):
         self.rs_auto_exposure = parse_yes_no(args.rs_auto_exposure)
         self.rs_use_undistort = parse_yes_no(args.rs_undistort)
         self.use_viz_3d = parse_yes_no(args.viz_3d)
+        self.planned_trials = max(0, int(args.num_trials))
 
         self.hsv_cfg = {
             'yellow': ((args.y_h_low, args.y_s_low, args.y_v_low), (args.y_h_high, args.y_s_high, args.y_v_high)),
@@ -124,8 +225,10 @@ class SessionManager(object):
         self.camera_centers = None
         self.corrected_transform = None
         self.output_root = None
+        self.task_timestamp = None
         self.traj_near_csv_path = None
         self.traj_interp_csv_path = None
+        self.pose_csv_path = None
         self.align_csv_path = None
         self.rs_undistort_maps = None
 
@@ -138,14 +241,20 @@ class SessionManager(object):
 
         self.track_near = make_track_state()
         self.track_interp = make_track_state()
+        self.rigid_model = None
+        self.pose_history = []
+        self.pose_rot_history = []
+        self.pose_valid_prev = False
 
         self.paused = False
+        self.task_complete = False
         self.last_time = None
         self.t0 = time.time()
 
         self.recording = False
-        self.segment_id = 0
-        self.segment_start_wall = None
+        self.trial_id = 0
+        self.trial_start_wall = None
+        self.current_trial_dir = None
         self.active_sinks = []
         self.ts_csv_file = None
         self.ts_csv_writer = None
@@ -158,24 +267,33 @@ class SessionManager(object):
         self.corrected_transform = build_corrected_transform(self.cameras, self.camera_centers)
 
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        self.output_root = resolve_output_root(os.path.expanduser(args.output_dir), timestamp)
+        self.task_timestamp = timestamp
+        self.output_root = resolve_output_root(os.path.expanduser(args.output_dir), timestamp, args.task_name)
         self.traj_near_csv_path = os.path.join(self.output_root, 'trajectory_3color_nearest.csv')
         self.traj_interp_csv_path = os.path.join(self.output_root, 'trajectory_3color_interp.csv')
+        self.pose_csv_path = os.path.join(self.output_root, 'rigid_pose_6d.csv')
         self.align_csv_path = os.path.join(self.output_root, 'time_alignment_log.csv')
-        print('output folder: %s' % self.output_root)
+        task_metadata_path = write_task_metadata(self.output_root, args, timestamp)
+        console.rule('PRISM Online Collection')
+        console.saved('output folder: %s' % self.output_root)
+        console.saved('task metadata: %s' % task_metadata_path)
+        console.info('task: %s | planned trials: %s | hand: %s'
+                     % (args.task_name, self.planned_trials if self.planned_trials > 0 else 'unlimited', args.hand_generation))
+        if args.rpi_port or args.sdk_script or args.feedback_port:
+            console.warning('RPi command bridge, SDK forwarding, and hand feedback logging are placeholders for now.')
 
         if args.rs_calib_json.strip():
             rs_K, rs_D, _rs_calib_wh, rs_data = load_rs_intrinsics(os.path.expanduser(args.rs_calib_json))
             rs_json_out = os.path.join(self.output_root, 'realsense_intrinsics.json')
             with open(rs_json_out, 'w', encoding='utf-8') as f:
                 json.dump(rs_data, f, ensure_ascii=False, indent=2)
-            print('realsense intrinsics saved to session: %s' % rs_json_out)
+            console.saved('realsense intrinsics saved to session: %s' % rs_json_out)
             if self.rs_use_undistort:
                 map1, map2, _ = build_undistort_maps(rs_K, rs_D, args.rs_width, args.rs_height)
                 self.rs_undistort_maps = (map1, map2)
-                print('realsense color undistortion enabled.')
+                console.success('realsense color undistortion enabled.')
         elif self.rs_use_undistort:
-            print('warning: --rs-undistort requested but --rs-calib-json not provided; undistortion disabled.')
+            console.warning('--rs-undistort requested but --rs-calib-json not provided; undistortion disabled.')
 
     def open_devices(self):
         args = self.args
@@ -243,16 +361,26 @@ class SessionManager(object):
         args = self.args
         if self.recording:
             return
-        self.segment_id += 1
-        seg_dir = os.path.join(self.output_root, 'segment_%03d' % self.segment_id)
-        os.makedirs(seg_dir, exist_ok=True)
+        if self.planned_trials > 0 and self.trial_id >= self.planned_trials:
+            console.warning('planned trial count reached (%d). press q/ESC to finish task.' % self.planned_trials)
+            return
+
+        self.trial_id += 1
+        trial_dir = os.path.join(self.output_root, 'trial_%06d' % self.trial_id)
+        cameras_dir = os.path.join(trial_dir, 'cameras')
+        logs_dir = os.path.join(trial_dir, 'logs')
+        os.makedirs(cameras_dir, exist_ok=True)
+        os.makedirs(os.path.join(trial_dir, 'trajectory'), exist_ok=True)
+        os.makedirs(logs_dir, exist_ok=True)
+        touch_placeholder_hand_logs(trial_dir)
+        self.current_trial_dir = trial_dir
 
         self.active_sinks = []
         for cam_i in range(4):
             fps = self.hik_threads[cam_i].fps_meter.fps()
             if fps < 1.0:
                 fps = float(args.hik_frame_rate)
-            path = os.path.join(seg_dir, 'hik%d_%s.mp4' % (cam_i, self.hik_serials[cam_i]))
+            path = os.path.join(cameras_dir, 'hik%d_%s.mp4' % (cam_i, self.hik_serials[cam_i]))
             sink = VideoSink(path, fps, max_queue=args.writer_queue,
                              brightness_alpha=args.rec_brightness_alpha,
                              brightness_beta=args.rec_brightness_beta)
@@ -262,19 +390,31 @@ class SessionManager(object):
         rs_fps = self.rs_thread.fps_meter.fps()
         if rs_fps < 1.0:
             rs_fps = float(args.rs_fps)
-        rs_path = os.path.join(seg_dir, 'realsense_color.mp4')
+        rs_path = os.path.join(cameras_dir, 'realsense_color.mp4')
         rs_sink = VideoSink(rs_path, rs_fps, max_queue=args.writer_queue)
         self.rs_thread.set_sink(rs_sink)
         self.active_sinks.append(rs_sink)
 
-        self.ts_csv_file = open(os.path.join(seg_dir, 'fps_log.csv'), 'w', newline='', encoding='utf-8')
+        self.ts_csv_file = open(os.path.join(logs_dir, 'fps_log.csv'), 'w', newline='', encoding='utf-8')
         self.ts_csv_writer = csv.writer(self.ts_csv_file)
-        self.ts_csv_writer.writerow(['wall_time', 'seg_time', 'hik0_fps', 'hik1_fps', 'hik2_fps', 'hik3_fps', 'rs_fps'])
+        self.ts_csv_writer.writerow(['wall_time', 'trial_time', 'hik0_fps', 'hik1_fps', 'hik2_fps', 'hik3_fps', 'rs_fps'])
 
-        self.segment_start_wall = time.time()
+        self.trial_start_wall = time.time()
+        write_trial_metadata(trial_dir, [
+            ('task_name', args.task_name),
+            ('trial_id', self.trial_id),
+            ('status', 'recording'),
+            ('start_wall_time', self.trial_start_wall),
+            ('hand_generation', args.hand_generation),
+            ('rpi_sdk_feedback_status', 'not_implemented'),
+            ('rpi_commands_log', ''),
+            ('sdk_commands_log', ''),
+            ('hand_feedback_log', ''),
+        ])
+
         self.recording = True
-        print('recording started: segment_%03d (hik_fps~%s, rs_fps~%.1f)'
-              % (self.segment_id, ['%.1f' % s.fps for s in self.active_sinks[:4]], rs_fps))
+        console.step('trial started: trial_%06d (hik_fps~%s, rs_fps~%.1f)'
+                 % (self.trial_id, ['%.1f' % s.fps for s in self.active_sinks[:4]], rs_fps))
 
     def stop_recording(self):
         if not self.recording:
@@ -298,12 +438,33 @@ class SessionManager(object):
             self.ts_csv_writer = None
 
         self.recording = False
-        self.segment_start_wall = None
-        print('recording stopped: segment_%03d (written=%d, dropped=%d)'
-              % (self.segment_id, total_written, total_dropped))
+        stop_wall = time.time()
+        if self.current_trial_dir is not None:
+            write_trial_metadata(self.current_trial_dir, [
+                ('task_name', self.args.task_name),
+                ('trial_id', self.trial_id),
+                ('status', 'stopped'),
+                ('start_wall_time', self.trial_start_wall),
+                ('end_wall_time', stop_wall),
+                ('duration_sec', stop_wall - self.trial_start_wall if self.trial_start_wall is not None else 0.0),
+                ('hand_generation', self.args.hand_generation),
+                ('rpi_sdk_feedback_status', 'not_implemented'),
+                ('rpi_commands_log', ''),
+                ('sdk_commands_log', ''),
+                ('hand_feedback_log', ''),
+                ('frames_written', total_written),
+                ('frames_dropped', total_dropped),
+            ])
+        self.trial_start_wall = None
+        self.current_trial_dir = None
+        console.success('trial stopped: trial_%06d (written=%d, dropped=%d)'
+                        % (self.trial_id, total_written, total_dropped))
         if total_dropped > 0:
-            print('warning: %d frames dropped (disk/encoding too slow). Lower fps/resolution or raise --writer-queue.'
-                  % total_dropped)
+            console.warning('%d frames dropped (disk/encoding too slow). Lower fps/resolution or raise --writer-queue.'
+                            % total_dropped)
+        if self.planned_trials > 0 and self.trial_id >= self.planned_trials:
+            self.task_complete = True
+            console.done('planned trial count reached (%d). finishing online collection.' % self.planned_trials)
 
     def run_loop(self):
         cv2.namedWindow('DexHand HighFps Capture', cv2.WINDOW_NORMAL)
@@ -313,28 +474,33 @@ class SessionManager(object):
             corrected_transform=self.corrected_transform,
         )
 
-        print('preview started. click preview window to focus keys.')
-        print('keys: SPACE start/stop recording, p pause tracking, r resume tracking, q/ESC quit')
+        console.info('preview started. click preview window to focus keys.')
+        console.info('keys: SPACE start/stop current trial, p pause tracking, r resume tracking, q/ESC finish task')
 
         with open(self.traj_near_csv_path, 'w', newline='', encoding='utf-8') as near_file, \
                 open(self.traj_interp_csv_path, 'w', newline='', encoding='utf-8') as interp_file, \
+                open(self.pose_csv_path, 'w', newline='', encoding='utf-8') as pose_file, \
                 open(self.align_csv_path, 'w', newline='', encoding='utf-8') as align_file:
             near_writer = csv.writer(near_file)
             interp_writer = csv.writer(interp_file)
+            pose_writer = csv.writer(pose_file)
             align_writer = csv.writer(align_file)
             header = ['t_sec', 'color', 'x_m', 'y_m', 'z_m', 'mode', 'num_views', 'max_norm_reproj_err', 'visible_cams']
             near_writer.writerow(header)
             interp_writer.writerow(header)
+            pose_writer.writerow(['t_sec', 'mode', 'x_m', 'y_m', 'z_m', 'roll_deg', 'pitch_deg', 'yaw_deg'])
             align_writer.writerow([
                 't_ref_sec', 'hik0_ts', 'hik1_ts', 'hik2_ts', 'hik3_ts',
                 'hik_spread_ms', 'rs_ts', 'rs_offset_ms',
             ])
 
             while True:
-                if not self._run_once(near_file, interp_file, align_file, near_writer, interp_writer, align_writer):
+                if not self._run_once(near_file, interp_file, pose_file, align_file,
+                                      near_writer, interp_writer, pose_writer, align_writer):
                     break
 
-    def _run_once(self, near_file, interp_file, align_file, near_writer, interp_writer, align_writer):
+    def _run_once(self, near_file, interp_file, pose_file, align_file,
+                  near_writer, interp_writer, pose_writer, align_writer):
         args = self.args
         now = time.time()
         dt = 1.0 / 30.0 if self.last_time is None else max(1e-3, now - self.last_time)
@@ -406,13 +572,61 @@ class SessionManager(object):
             interp_file.flush()
             align_file.flush()
 
-        segment_elapsed = (now - self.segment_start_wall) if (self.recording and self.segment_start_wall is not None) else 0.0
+        pose_mode = 'none'
+        pose_xyz = None
+        pose_rpy_deg = None
+        pose_rot = None
+        pose_now = None
+
+        valid_points = {name: point_near[name] for name in COLOR_ORDER if point_near[name] is not None}
+        if len(valid_points) == len(COLOR_ORDER):
+            if self.rigid_model is None:
+                self.rigid_model = build_body_model(valid_points)
+                if self.rigid_model is not None:
+                    console.success('rigid model initialized from first full three-color observation.')
+
+            if self.rigid_model is not None:
+                est = estimate_pose_from_model(self.rigid_model['model_points'], valid_points)
+                if est is not None:
+                    pose_rot, pose_xyz = est
+                    roll, pitch, yaw = matrix_to_rpy_zyx(pose_rot)
+                    pose_rpy_deg = np.degrees(np.array([roll, pitch, yaw], dtype=np.float64))
+                    pose_now = np.array([
+                        pose_xyz[0], pose_xyz[1], pose_xyz[2],
+                        pose_rpy_deg[0], pose_rpy_deg[1], pose_rpy_deg[2],
+                    ], dtype=np.float64)
+                    pose_mode = 'measured'
+
+        if pose_now is not None:
+            self.pose_history.append(pose_now.tolist())
+            self.pose_rot_history.append(pose_rot.reshape(9).tolist())
+            self.pose_valid_prev = True
+            if len(self.pose_history) > args.max_traj_points:
+                self.pose_history = self.pose_history[-args.max_traj_points:]
+            if len(self.pose_rot_history) > args.max_traj_points:
+                self.pose_rot_history = self.pose_rot_history[-args.max_traj_points:]
+            pose_writer.writerow([
+                '%.6f' % (ref_time - self.t0), pose_mode,
+                '%.9f' % pose_now[0], '%.9f' % pose_now[1], '%.9f' % pose_now[2],
+                '%.6f' % pose_now[3], '%.6f' % pose_now[4], '%.6f' % pose_now[5],
+            ])
+            pose_file.flush()
+        elif self.pose_valid_prev and pose_mode in ('none', 'paused'):
+            self.pose_history.append([float('nan')] * 6)
+            self.pose_rot_history.append([float('nan')] * 9)
+            if len(self.pose_history) > args.max_traj_points:
+                self.pose_history = self.pose_history[-args.max_traj_points:]
+            if len(self.pose_rot_history) > args.max_traj_points:
+                self.pose_rot_history = self.pose_rot_history[-args.max_traj_points:]
+            self.pose_valid_prev = False
+
+        trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
         if self.recording and self.ts_csv_writer is not None:
-            self.ts_csv_writer.writerow(['%.6f' % now, '%.6f' % segment_elapsed] +
+            self.ts_csv_writer.writerow(['%.6f' % now, '%.6f' % trial_elapsed] +
                                         ['%.3f' % f for f in hik_fps] + ['%.3f' % rs_fps_now])
 
         grid = draw_preview(hik_latest, rs_aligned, obs_near, hik_fps, rs_fps_now,
-                            self.recording, self.segment_id, segment_elapsed)
+                            self.recording, self.trial_id, trial_elapsed)
 
         cv2.putText(grid, 'hik sync spread=%.1f ms | rs offset=%s ms' % (
             hik_spread_ms, ('%.1f' % rs_offset_ms) if rs_offset_ms == rs_offset_ms else 'n/a'),
@@ -425,11 +639,26 @@ class SessionManager(object):
             cv2.putText(grid, txt, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, COLOR_BRG[name], 2, cv2.LINE_AA)
             y0 += 30
 
+        if pose_xyz is not None and pose_rpy_deg is not None:
+            cv2.putText(grid, 'rigid6d xyz=(%.3f, %.3f, %.3f)m' % (pose_xyz[0], pose_xyz[1], pose_xyz[2]),
+                        (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
+            y0 += 30
+            cv2.putText(grid, 'rpy=(%.2f, %.2f, %.2f) deg' % (pose_rpy_deg[0], pose_rpy_deg[1], pose_rpy_deg[2]),
+                        (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
+        else:
+            cv2.putText(grid, 'rigid6d: waiting for all three colors',
+                        (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (220, 220, 220), 2, cv2.LINE_AA)
+
         cv2.imshow('DexHand HighFps Capture', grid)
 
         self.plotter3d.update(
             self.track_near['traj_points'], point_near,
-            mode_text='NEAREST | ' + ' | '.join(['%s:%s' % (n, mode_near[n]) for n in COLOR_ORDER]),
+            mode_text='NEAREST | ' + ' | '.join(['%s:%s' % (n, mode_near[n]) for n in COLOR_ORDER] + ['pose:%s' % pose_mode]),
+            pose_t=pose_xyz,
+            pose_R=pose_rot,
+            pose_history=self.pose_history,
+            pose_rot_history=self.pose_rot_history,
+            rigid_axis_len=args.rigid_axis_len,
         )
 
         key = cv2.waitKey(1) & 0xFF
@@ -440,11 +669,23 @@ class SessionManager(object):
         elif key == ord(' '):
             if self.recording:
                 self.stop_recording()
+                if self.task_complete:
+                    return False
             else:
                 self.start_recording()
         elif key in (ord('q'), ord('Q'), 27):
             return False
         return True
+
+    def handle_post_process_choice(self):
+        choice = self.args.post_process
+        if choice == 'ask':
+            choice = 'now' if console.ask_yes_no('online collection finished. run offline post-processing now?') else 'later'
+
+        if choice == 'now':
+            console.warning('offline post-processing entrypoint is not implemented yet; raw data is ready at: %s' % self.output_root)
+        else:
+            console.saved('post-processing deferred. raw data is ready at: %s' % self.output_root)
 
     def close(self):
         if self.recording:
@@ -486,14 +727,23 @@ class SessionManager(object):
         finally:
             self.close()
 
-        print('trajectory (nearest) csv saved: %s' % self.traj_near_csv_path)
-        print('trajectory (interp)  csv saved: %s' % self.traj_interp_csv_path)
-        print('done.')
+        console.saved('trajectory (nearest) csv saved: %s' % self.traj_near_csv_path)
+        console.saved('trajectory (interp)  csv saved: %s' % self.traj_interp_csv_path)
+        self.handle_post_process_choice()
+        console.done('done.')
 
 
 def main(argv=None):
-    parser = build_arg_parser()
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument('--config', type=str, default=DEFAULT_ONLINE_CONFIG)
+    config_args, _ = config_parser.parse_known_args(argv)
+    config_values = load_yaml_config(config_args.config)
+    defaults = merge_defaults(DEFAULT_CLI_VALUES, config_values)
+
+    parser = build_arg_parser(defaults, config_args.config)
     args = parser.parse_args(argv)
+    if not args.calib_json:
+        parser.error('--calib-json is required unless calib_json is set in --config')
     return SessionManager(args).run()
 
 
