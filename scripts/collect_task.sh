@@ -16,10 +16,4 @@ set -u
 export PRISM_MVIMPORT_DIR="${PRISM_MVIMPORT_DIR:-$MVS_ROOT/Samples/64/Python/MvImport}"
 export PYTHONPATH="$ROOT_DIR/src:$PRISM_MVIMPORT_DIR:${PYTHONPATH:-}"
 
-case "${PRISM_LEGACY_COLLECT:-}" in
-  1|y|Y|yes|YES|true|TRUE)
-    export PRISM_LEGACY_RECORDING_DIR="${PRISM_LEGACY_RECORDING_DIR:-$MVS_ROOT/Samples/64/Python/General/Recording}"
-    ;;
-esac
-
 exec "$PYTHON_BIN" -m prism.cli.collect "$@"

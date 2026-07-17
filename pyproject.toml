@@ -9,6 +9,7 @@ dependencies = [
 
 [project.scripts]
 prism-collect = "prism.cli.collect:main"
+prism-rebuild-aligned = "prism.processing.offline_rebuild:main"
 
 [build-system]
 requires = ["setuptools>=64"]
