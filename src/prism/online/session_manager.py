@@ -26,6 +26,7 @@ from prism.devices.cameras.realsense_camera import (
 )
 from prism.devices.hand import GESTURE_ID_TO_NAME, GESTURE_ID_TO_POSE, GESTURE_TABLE, MechHandClient
 from prism.online.display_server import draw_preview
+from prism.online.preview_backend import create_preview_backend
 from prism.online.trajectory_plotter import Live3DPlotter
 from prism.reconstruction.calibration import (
     build_corrected_transform,
@@ -129,6 +130,7 @@ DEFAULT_CLI_VALUES = {
     'preview_target_w': 600,
     'preview_window_width': 1920,
     'preview_window_height': 1080,
+    'ui_backend': 'opencv',
 }
 
 
@@ -242,6 +244,8 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
                           help='initial unified preview window width in pixels')
     tracking.add_argument('--preview-window-height', type=int, default=defaults['preview_window_height'],
                           help='initial unified preview window height in pixels')
+    tracking.add_argument('--ui-backend', type=str, default=defaults['ui_backend'], choices=['opencv', 'qt'],
+                          help='preview UI backend; qt keeps keyboard/CLI control and avoids OpenCV window path')
     return parser
 
 
@@ -319,6 +323,8 @@ class SessionManager(object):
         self.hand_digit_timeout_s = 0.65
         self.hand_ui_regions = []
         self.hand_click_gesture = None
+        self.preview_backend = None
+        self.window_name = 'DexHand HighFps Capture'
 
     def prepare_session(self):
         args = self.args
@@ -603,8 +609,11 @@ class SessionManager(object):
             ratios = [720.0 / 1280.0]
 
         max_ratio = max(ratios)
-        window_w = max(960, int(self.args.preview_window_width))
-        window_h = max(640, int(self.args.preview_window_height))
+        if self.preview_backend is not None:
+            window_w, window_h = self.preview_backend.get_window_size()
+        else:
+            window_w = max(960, int(self.args.preview_window_width))
+            window_h = max(640, int(self.args.preview_window_height))
 
         # Grid has 2 columns and 3 rows based on max cell height.
         max_by_h = int((window_h - 24) / max(1e-6, 3.0 * max_ratio))
@@ -748,13 +757,15 @@ class SessionManager(object):
             console.done('planned trial count reached (%d). finishing online collection.' % self.planned_trials)
 
     def run_loop(self):
-        cv2.namedWindow('DexHand HighFps Capture', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(
-            'DexHand HighFps Capture',
+        mouse_cb = self._on_mouse_event if self.args.ui_backend == 'opencv' else None
+        self.preview_backend = create_preview_backend(
+            self.args.ui_backend,
+            self.window_name,
             max(640, int(self.args.preview_window_width)),
             max(480, int(self.args.preview_window_height)),
+            mouse_callback=mouse_cb,
         )
-        cv2.setMouseCallback('DexHand HighFps Capture', self._on_mouse_event)
+        self.preview_backend.open()
         self.plotter3d = Live3DPlotter(
             enabled=self.use_viz_3d,
             camera_centers=self.camera_centers,
@@ -766,6 +777,8 @@ class SessionManager(object):
                      'click hand gesture buttons or type hand gesture id 1-17 '
                      '(for 10-17 type two digits quickly), '
                      'Enter submit pending 1, Backspace clear pending input, q/ESC finish task')
+        if self.args.ui_backend == 'qt':
+            console.info('ui backend: qt (keyboard/CLI gesture control only; click-to-send disabled).')
 
         with open(self.traj_near_csv_path, 'w', newline='', encoding='utf-8') as near_file, \
                 open(self.traj_interp_csv_path, 'w', newline='', encoding='utf-8') as interp_file, \
@@ -950,6 +963,11 @@ class SessionManager(object):
 
         effective_target_w = self._estimate_preview_target_w(hik_latest, rs_aligned)
 
+        window_w, _window_h = self.preview_backend.get_window_size() if self.preview_backend is not None else (
+            max(640, int(args.preview_window_width)),
+            max(480, int(args.preview_window_height)),
+        )
+
         draw_out = draw_preview(
             hik_latest,
             rs_aligned,
@@ -963,11 +981,15 @@ class SessionManager(object):
             traj_image=self.plotter3d.get_latest_frame(),
             hand_info=hand_info,
             traj_error=self.plotter3d.get_latest_error(),
-            return_ui_meta=True,
-            composite_target_w=max(640, int(args.preview_window_width)),
+            return_ui_meta=(self.args.ui_backend == 'opencv'),
+            composite_target_w=max(640, int(window_w)),
         )
-        grid, ui_meta = draw_out
-        self.hand_ui_regions = ui_meta.get('gesture_regions', [])
+        if self.args.ui_backend == 'opencv':
+            grid, ui_meta = draw_out
+            self.hand_ui_regions = ui_meta.get('gesture_regions', [])
+        else:
+            grid = draw_out
+            self.hand_ui_regions = []
 
         cv2.putText(grid, 'hik sync spread=%.1f ms | rs offset=%s ms' % (
             hik_spread_ms, ('%.1f' % rs_offset_ms) if rs_offset_ms == rs_offset_ms else 'n/a'),
@@ -990,9 +1012,9 @@ class SessionManager(object):
             cv2.putText(grid, 'rigid6d: need >=3 modeled LEDs (visible=%d)' % len(visible_names),
                         (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (220, 220, 220), 2, cv2.LINE_AA)
 
-        cv2.imshow('DexHand HighFps Capture', grid)
+        self.preview_backend.show_frame(grid)
 
-        key = cv2.waitKey(1) & 0xFF
+        key = self.preview_backend.poll_key()
         if key in (ord('p'), ord('P')):
             self.paused = True
         elif key in (ord('r'), ord('R')):
@@ -1059,6 +1081,12 @@ class SessionManager(object):
                 pass
         if self.plotter3d is not None:
             self.plotter3d.close()
+        if self.preview_backend is not None:
+            try:
+                self.preview_backend.close()
+            except Exception:
+                pass
+            self.preview_backend = None
         if self.hand_task_cmd_file is not None:
             try:
                 self.hand_task_cmd_file.flush()
@@ -1072,7 +1100,8 @@ class SessionManager(object):
                 self.hand_client.close()
             except Exception:
                 pass
-        cv2.destroyAllWindows()
+        if self.args.ui_backend == 'opencv':
+            cv2.destroyAllWindows()
         try:
             MvCamera.MV_CC_Finalize()
         except Exception:

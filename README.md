@@ -55,6 +55,8 @@ scripts/collect_task.sh \
   - `Backspace` 清除待发送编号
 - `q` 或 `ESC`: 结束采集任务
 
+Qt 试验 UI（`--ui-backend qt`）下，当前保持键盘/CLI 控制，不启用点击发送手势。
+
 手势协议规则：`gesture_id = ROG_value + 1`。例如：`gesture_id=1 -> @ROG<0>&`，`gesture_id=17 -> @ROG<16>&`。
 
 手部控制连接参数（同一条 `prism-collect` 命令生效）：
@@ -108,6 +110,7 @@ configs/collection/default_online.yaml
 - `--preview-target-w`: 统一预览里每个相机子图的渲染宽度（更大更清晰，但更耗 CPU）
 - `--preview-window-width`: 统一预览窗口初始宽度
 - `--preview-window-height`: 统一预览窗口初始高度
+- `--ui-backend opencv|qt`: 预览窗口后端（`qt` 为试验路径，仍保持键盘/CLI 控制）
 
 说明：统一预览会尽量把拼接结果宽度对齐到窗口宽度，减少 OpenCV 二次缩放导致的发糊；若仍偏糊，可优先增大 `--preview-window-width`，其次增大 `--preview-target-w`。
 另外，系统会根据窗口高度自动下调子图宽度，避免超过窗口高度后被再次缩放（这会让视频和文字一起变糊）。

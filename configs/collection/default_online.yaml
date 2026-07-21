@@ -75,3 +75,4 @@ frame_buffer: 15
 preview_target_w: 700
 preview_window_width: 2560
 preview_window_height: 1440
+ui_backend: opencv
