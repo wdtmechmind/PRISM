@@ -2,6 +2,8 @@ import argparse
 import csv
 import json
 import os
+import signal
+import sys
 import time
 
 import cv2
@@ -131,6 +133,10 @@ DEFAULT_CLI_VALUES = {
     'preview_window_width': 1920,
     'preview_window_height': 1080,
     'ui_backend': 'opencv',
+    'temporal_calib': 'y',
+    'temporal_calib_tag_id': 0,
+    'temporal_calib_tag_delay_s': 3.0,
+    'temporal_calib_tag_display_s': 1.5,
 }
 
 
@@ -246,6 +252,21 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
                           help='initial unified preview window height in pixels')
     tracking.add_argument('--ui-backend', type=str, default=defaults['ui_backend'], choices=['opencv', 'qt'],
                           help='preview UI backend; qt keeps keyboard/CLI control and avoids OpenCV window path')
+
+    tcalib = parser.add_argument_group('temporal delay calibration (runs once after cameras open)')
+    tcalib.add_argument('--temporal-calib', type=str, default=defaults['temporal_calib'],
+                        help='run AprilTag temporal calibration at session start (y/n, default: y)')
+    tcalib.add_argument('--skip-temporal-calib', action='store_true',
+                        help='shorthand for --temporal-calib n')
+    tcalib.add_argument('--temporal-calib-tag-id', type=int,
+                        default=defaults['temporal_calib_tag_id'],
+                        help='AprilTag ID to flash; -1 = any (default: 0)')
+    tcalib.add_argument('--temporal-calib-tag-delay-s', type=float,
+                        default=defaults['temporal_calib_tag_delay_s'],
+                        help='seconds between cameras-ready and tag appearing on screen (default: 3)')
+    tcalib.add_argument('--temporal-calib-tag-display-s', type=float,
+                        default=defaults['temporal_calib_tag_display_s'],
+                        help='seconds to keep tag visible on screen (default: 1.5)')
     return parser
 
 
@@ -1056,61 +1077,158 @@ class SessionManager(object):
             console.saved('post-processing deferred. raw data is ready at: %s' % self.output_root)
 
     def close(self):
+        """
+        Comprehensive cleanup that ensures all threads, files, and resources are properly closed.
+        Uses longer timeouts and handles cleanup failures gracefully.
+        """
+        console.info('[cleanup] starting graceful shutdown...')
+        
+        # Stop any active recording
         if self.recording:
             try:
+                console.info('[cleanup] stopping active recording...')
                 self.stop_recording()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error stopping recording: %s' % e)
+
+        # Stop VideoSink threads (these have their own worker threads)
+        if self.active_sinks:
+            console.info('[cleanup] closing %d active video sinks...' % len(self.active_sinks))
+            for sink in self.active_sinks:
+                try:
+                    sink.close()
+                except Exception as e:
+                    console.warning('[cleanup] error closing sink: %s' % e)
+            self.active_sinks = []
+
+        # Stop camera capture threads
+        console.info('[cleanup] stopping %d HIK camera threads...' % len(self.hik_threads))
         for th in self.hik_threads:
-            th.stop()
+            try:
+                th.stop()
+            except Exception as e:
+                console.warning('[cleanup] error stopping HIK thread: %s' % e)
+        
         if self.rs_thread is not None:
-            self.rs_thread.stop()
-        for th in self.hik_threads:
-            th.join(timeout=2.0)
+            console.info('[cleanup] stopping RealSense thread...')
+            try:
+                self.rs_thread.stop()
+            except Exception as e:
+                console.warning('[cleanup] error stopping RS thread: %s' % e)
+
+        # Wait for camera threads with extended timeout (5 sec each)
+        console.info('[cleanup] waiting for camera threads to finish...')
+        for i, th in enumerate(self.hik_threads):
+            try:
+                if th.is_alive():
+                    console.info('[cleanup] waiting for HIK thread %d (timeout=5.0s)...' % i)
+                    th.join(timeout=5.0)
+                    if th.is_alive():
+                        console.warning('[cleanup] HIK thread %d did not finish in time' % i)
+            except Exception as e:
+                console.warning('[cleanup] error joining HIK thread %d: %s' % (i, e))
+        
         if self.rs_thread is not None:
-            self.rs_thread.join(timeout=2.0)
-        for rec in self.recorders:
+            try:
+                if self.rs_thread.is_alive():
+                    console.info('[cleanup] waiting for RS thread (timeout=5.0s)...')
+                    self.rs_thread.join(timeout=5.0)
+                    if self.rs_thread.is_alive():
+                        console.warning('[cleanup] RS thread did not finish in time')
+            except Exception as e:
+                console.warning('[cleanup] error joining RS thread: %s' % e)
+
+        # Close camera grabbers
+        console.info('[cleanup] closing camera grabbers...')
+        for i, rec in enumerate(self.recorders):
             try:
                 rec.stop_and_close()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error closing HIK grabber %d: %s' % (i, e))
+        
         if self.rs_grabber is not None:
             try:
                 self.rs_grabber.stop_and_close()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error closing RS grabber: %s' % e)
+
+        # Close visualization and UI
+        console.info('[cleanup] closing UI and visualization...')
         if self.plotter3d is not None:
-            self.plotter3d.close()
+            try:
+                self.plotter3d.close()
+            except Exception as e:
+                console.warning('[cleanup] error closing 3D plotter: %s' % e)
+        
         if self.preview_backend is not None:
             try:
                 self.preview_backend.close()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error closing preview backend: %s' % e)
             self.preview_backend = None
+
+        # Close hand-related files
+        console.info('[cleanup] closing hand command files...')
         if self.hand_task_cmd_file is not None:
             try:
                 self.hand_task_cmd_file.flush()
                 self.hand_task_cmd_file.close()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error closing hand task cmd file: %s' % e)
             self.hand_task_cmd_file = None
             self.hand_task_cmd_writer = None
+
+        # Close hand connection
         if self.hand_client is not None:
             try:
                 self.hand_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                console.warning('[cleanup] error closing hand client: %s' % e)
+
+        # Close UI windows
         if self.args.ui_backend == 'opencv':
-            cv2.destroyAllWindows()
+            try:
+                console.info('[cleanup] destroying OpenCV windows...')
+                cv2.destroyAllWindows()
+            except Exception as e:
+                console.warning('[cleanup] error destroying windows: %s' % e)
+
+        # Finalize camera SDK
         try:
+            console.info('[cleanup] finalizing camera SDK...')
             MvCamera.MV_CC_Finalize()
-        except Exception:
-            pass
+        except Exception as e:
+            console.warning('[cleanup] error finalizing SDK: %s' % e)
+        
+        console.success('[cleanup] shutdown complete')
+
+    def _run_temporal_calib(self):
+        """Run AprilTag temporal calibration using the already-open camera threads."""
+        args = self.args
+        if getattr(args, 'skip_temporal_calib', False) or not parse_yes_no(args.temporal_calib):
+            console.info('temporal calibration skipped (--skip-temporal-calib)')
+            return
+        try:
+            from prism.recording.temporal_calibration import run_session_temporal_calibration
+            run_session_temporal_calibration(
+                hik_threads=self.hik_threads,
+                rs_thread=self.rs_thread,
+                hik_serials=self.hik_serials,
+                rs_serial=args.rs_serial.strip() or None,
+                output_dir=self.output_root,
+                tag_id=args.temporal_calib_tag_id,
+                tag_delay_s=args.temporal_calib_tag_delay_s,
+                tag_display_s=args.temporal_calib_tag_display_s,
+            )
+        except Exception as exc:
+            console.warning('temporal calibration failed: %s' % exc)
+            console.warning('continuing without temporal offsets.')
 
     def run(self):
         try:
             self.prepare_session()
             self.open_devices()
+            self._run_temporal_calib()
             self.run_loop()
         finally:
             self.close()
@@ -1119,8 +1237,25 @@ class SessionManager(object):
         console.saved('trajectory (interp)  csv saved: %s' % self.traj_interp_csv_path)
         if self.hand_task_cmd_path:
             console.saved('hand sdk timeline csv saved: %s' % self.hand_task_cmd_path)
+        self._analyze_accuracy()
         self.handle_post_process_choice()
         console.done('done.')
+
+    def _analyze_accuracy(self):
+        """Print a LED localization accuracy report after the session ends."""
+        try:
+            from prism.processing.led_accuracy import print_accuracy_report
+        except Exception as ex:
+            console.warning('精度分析模块导入失败，跳过: %s' % ex)
+            return
+        try:
+            console.info('正在计算 LED 定位精度...')
+            print_accuracy_report(
+                self.traj_near_csv_path,
+                rigid_path=self.pose_csv_path if os.path.isfile(self.pose_csv_path) else None,
+            )
+        except Exception as ex:
+            console.warning('精度分析失败，跳过: %s' % ex)
 
 
 def main(argv=None):
@@ -1134,7 +1269,35 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.calib_json:
         parser.error('--calib-json is required unless calib_json is set in --config')
-    return SessionManager(args).run()
+    
+    # Create session manager
+    session_manager = SessionManager(args)
+    
+    # Set up signal handlers for graceful shutdown
+    def handle_shutdown_signal(signum, frame):
+        sig_name = signal.Signals(signum).name
+        console.warning('[signal] received %s, initiating graceful shutdown...' % sig_name)
+        session_manager.close()
+        sys.exit(0)
+    
+    # Register signal handlers for SIGINT (Ctrl+C) and SIGTERM (system termination)
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    
+    try:
+        return session_manager.run()
+    except KeyboardInterrupt:
+        console.warning('[signal] keyboard interrupt detected, shutting down...')
+        session_manager.close()
+        return 1
+    except Exception as e:
+        console.error('[error] unexpected error during session: %s' % e)
+        console.warning('[error] forcing cleanup...')
+        try:
+            session_manager.close()
+        except Exception as cleanup_error:
+            console.warning('[error] cleanup error: %s' % cleanup_error)
+        raise
 
 
 if __name__ == '__main__':

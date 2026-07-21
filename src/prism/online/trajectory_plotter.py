@@ -47,15 +47,15 @@ class Live3DPlotter(object):
             self.enabled = False
             return
 
-        self.fig = self.Figure(figsize=(8, 10), dpi=120)
+        self.fig = self.Figure(figsize=(12, 6), dpi=120)
         self.canvas = self.FigureCanvasAgg(self.fig)
-        self.ax_raw = self.fig.add_subplot(211, projection='3d')
+        self.ax_raw = self.fig.add_subplot(121, projection='3d')
         self.ax_raw.set_xlabel('X (m)')
         self.ax_raw.set_ylabel('Y (m)')
         self.ax_raw.set_zlabel('Z (m)')
         self.ax_raw.set_title('Raw World Frame')
 
-        self.ax_corr = self.fig.add_subplot(212, projection='3d')
+        self.ax_corr = self.fig.add_subplot(122, projection='3d')
         self.ax_corr.set_xlabel('Xc (m)')
         self.ax_corr.set_ylabel('Yc (m)')
         self.ax_corr.set_zlabel('Zc (m)')
@@ -66,7 +66,7 @@ class Live3DPlotter(object):
             ax.view_init(elev=22, azim=-58)
             ax.tick_params(labelsize=8)
 
-        self.fig.subplots_adjust(left=0.06, right=0.98, top=0.96, bottom=0.04, hspace=0.22)
+        self.fig.subplots_adjust(left=0.04, right=0.985, top=0.95, bottom=0.06, wspace=0.14)
 
         for name in COLOR_ORDER:
             c = COLOR_MPL[name]
@@ -207,7 +207,8 @@ class Live3DPlotter(object):
         maxs = np.max(fpts, axis=0)
         center = 0.5 * (mins + maxs)
         span = np.max(np.maximum(maxs - mins, 1e-6))
-        half = 0.6 * span + 1e-4
+        # Use a tighter span factor so trajectories appear zoomed-in and clearer.
+        half = 0.42 * span + 1e-4
         ax.set_xlim(center[0] - half, center[0] + half)
         ax.set_ylim(center[1] - half, center[1] + half)
         ax.set_zlim(center[2] - half, center[2] + half)
