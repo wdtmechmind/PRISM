@@ -1,6 +1,8 @@
 import collections
+import os
 
 import cv2
+import numpy as np
 
 
 class OpenCVPreviewBackend(object):
@@ -46,6 +48,7 @@ class QtPreviewBackend(object):
         self._qt = None
 
     def open(self):
+        self._sanitize_qt_env_for_cv2_conflict()
         try:
             from PySide6 import QtCore, QtGui, QtWidgets
         except Exception:
@@ -118,6 +121,17 @@ class QtPreviewBackend(object):
         self._window.setFocus()
         self._app.processEvents()
 
+    @staticmethod
+    def _sanitize_qt_env_for_cv2_conflict():
+        # OpenCV wheels often set Qt plugin env vars to cv2/qt/plugins, which can
+        # conflict with PySide/PyQt runtime loading and cause xcb plugin aborts.
+        keys = ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']
+        for key in keys:
+            val = os.environ.get(key, '')
+            low = val.lower()
+            if 'cv2' in low and 'qt' in low and 'plugin' in low:
+                os.environ.pop(key, None)
+
     def show_frame(self, bgr_frame):
         QtCore, QtGui, _QtWidgets = self._qt
         if self._window is None or self._label is None:
@@ -126,7 +140,8 @@ class QtPreviewBackend(object):
         if self._closed:
             return
 
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        # Avoid cv2 usage in Qt backend path to reduce Qt plugin interaction surface.
+        rgb = np.ascontiguousarray(bgr_frame[:, :, ::-1])
         h, w = rgb.shape[:2]
         qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
         pix = QtGui.QPixmap.fromImage(qimg)
