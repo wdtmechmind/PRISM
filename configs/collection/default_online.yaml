@@ -9,6 +9,11 @@ post_process: ask
 rpi_port: ''
 sdk_script: ''
 feedback_port: ''
+hand_ip: 127.0.0.1
+hand_port: 60686
+hand_timeout_s: 3.0
+hand_settle_time_s: 1.0
+hand_auto_connect: 'n'
 
 calib_json: /mnt/projects-8tb/PRISM/configs/devices/charuco_4cam_result.json
 
@@ -67,3 +72,6 @@ max_predict_frames: 6
 viz_3d: 'y'
 track_every: 1
 frame_buffer: 15
+preview_target_w: 600
+preview_window_width: 1920
+preview_window_height: 1080

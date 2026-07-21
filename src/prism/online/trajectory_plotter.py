@@ -29,53 +29,63 @@ class Live3DPlotter(object):
         self.rigid_axes_corr = {}
         self.rigid_axes_hist_raw = {}
         self.rigid_axes_hist_corr = {}
+        self.latest_bgr = None
+        self.latest_error = ''
 
         if not self.enabled:
             return
 
         try:
-            import matplotlib.pyplot as plt
-            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
             from mpl_toolkits.mplot3d.art3d import Line3DCollection
-            self.plt = plt
+            self.Figure = Figure
+            self.FigureCanvasAgg = FigureCanvasAgg
             self.Line3DCollection = Line3DCollection
         except Exception as ex:
             print('warning: matplotlib unavailable, disable 3D plot: %s' % ex)
             self.enabled = False
             return
 
-        self.plt.ion()
-        self.fig = self.plt.figure('DexHand LED 3D Trajectory', figsize=(12, 5))
-        self.ax_raw = self.fig.add_subplot(121, projection='3d')
+        self.fig = self.Figure(figsize=(8, 10), dpi=120)
+        self.canvas = self.FigureCanvasAgg(self.fig)
+        self.ax_raw = self.fig.add_subplot(211, projection='3d')
         self.ax_raw.set_xlabel('X (m)')
         self.ax_raw.set_ylabel('Y (m)')
         self.ax_raw.set_zlabel('Z (m)')
         self.ax_raw.set_title('Raw World Frame')
 
-        self.ax_corr = self.fig.add_subplot(122, projection='3d')
+        self.ax_corr = self.fig.add_subplot(212, projection='3d')
         self.ax_corr.set_xlabel('Xc (m)')
         self.ax_corr.set_ylabel('Yc (m)')
         self.ax_corr.set_zlabel('Zc (m)')
         self.ax_corr.set_title('Corrected Frame (camera plane z=0)')
 
+        for ax in [self.ax_raw, self.ax_corr]:
+            ax.grid(True, linestyle='--', linewidth=0.6, alpha=0.45)
+            ax.view_init(elev=22, azim=-58)
+            ax.tick_params(labelsize=8)
+
+        self.fig.subplots_adjust(left=0.06, right=0.98, top=0.96, bottom=0.04, hspace=0.22)
+
         for name in COLOR_ORDER:
             c = COLOR_MPL[name]
-            self.lines_raw[name], = self.ax_raw.plot([], [], [], '-', color=c, linewidth=2, label=name)
-            self.current_raw[name] = self.ax_raw.scatter([], [], [], color=c, s=40)
-            self.lines_corr[name], = self.ax_corr.plot([], [], [], '-', color=c, linewidth=2, label=name)
-            self.current_corr[name] = self.ax_corr.scatter([], [], [], color=c, s=40)
+            self.lines_raw[name], = self.ax_raw.plot([], [], [], '-', color=c, linewidth=2.4, label=name)
+            self.current_raw[name] = self.ax_raw.scatter([], [], [], color=c, s=48)
+            self.lines_corr[name], = self.ax_corr.plot([], [], [], '-', color=c, linewidth=2.4, label=name)
+            self.current_corr[name] = self.ax_corr.scatter([], [], [], color=c, s=48)
 
-        self.rigid_center_line_raw, = self.ax_raw.plot([], [], [], '--', color='magenta', linewidth=1.8, label='rigid-center')
-        self.rigid_center_line_corr, = self.ax_corr.plot([], [], [], '--', color='magenta', linewidth=1.8, label='rigid-center')
-        self.rigid_origin_raw = self.ax_raw.scatter([], [], [], color='black', s=45, marker='o')
-        self.rigid_origin_corr = self.ax_corr.scatter([], [], [], color='black', s=45, marker='o')
+        self.rigid_center_line_raw, = self.ax_raw.plot([], [], [], '--', color='magenta', linewidth=2.0, label='rigid-center')
+        self.rigid_center_line_corr, = self.ax_corr.plot([], [], [], '--', color='magenta', linewidth=2.0, label='rigid-center')
+        self.rigid_origin_raw = self.ax_raw.scatter([], [], [], color='black', s=52, marker='o')
+        self.rigid_origin_corr = self.ax_corr.scatter([], [], [], color='black', s=52, marker='o')
 
-        self.rigid_axes_raw['x'], = self.ax_raw.plot([], [], [], '-', color='red', linewidth=2.5)
-        self.rigid_axes_raw['y'], = self.ax_raw.plot([], [], [], '-', color='green', linewidth=2.5)
-        self.rigid_axes_raw['z'], = self.ax_raw.plot([], [], [], '-', color='blue', linewidth=2.5)
-        self.rigid_axes_corr['x'], = self.ax_corr.plot([], [], [], '-', color='red', linewidth=2.5)
-        self.rigid_axes_corr['y'], = self.ax_corr.plot([], [], [], '-', color='green', linewidth=2.5)
-        self.rigid_axes_corr['z'], = self.ax_corr.plot([], [], [], '-', color='blue', linewidth=2.5)
+        self.rigid_axes_raw['x'], = self.ax_raw.plot([], [], [], '-', color='red', linewidth=2.8)
+        self.rigid_axes_raw['y'], = self.ax_raw.plot([], [], [], '-', color='green', linewidth=2.8)
+        self.rigid_axes_raw['z'], = self.ax_raw.plot([], [], [], '-', color='blue', linewidth=2.8)
+        self.rigid_axes_corr['x'], = self.ax_corr.plot([], [], [], '-', color='red', linewidth=2.8)
+        self.rigid_axes_corr['y'], = self.ax_corr.plot([], [], [], '-', color='green', linewidth=2.8)
+        self.rigid_axes_corr['z'], = self.ax_corr.plot([], [], [], '-', color='blue', linewidth=2.8)
 
         hist_style = {
             'x': ('red', 0.9),
@@ -92,11 +102,24 @@ class Live3DPlotter(object):
             self.rigid_axes_hist_raw[axis].set_segments([])
             self.rigid_axes_hist_corr[axis].set_segments([])
 
-        self.ax_raw.legend(loc='upper right')
-        self.ax_corr.legend(loc='upper right')
+        self.ax_raw.legend(loc='upper right', fontsize=8, framealpha=0.8)
+        self.ax_corr.legend(loc='upper right', fontsize=8, framealpha=0.8)
 
         self._draw_camera_markers()
         self.ready = True
+
+    def _canvas_to_bgr(self):
+        # Prefer RGBA buffer path (stable across newer Matplotlib versions).
+        rgba = np.asarray(self.canvas.buffer_rgba(), dtype=np.uint8)
+        if rgba.ndim == 3 and rgba.shape[2] == 4:
+            rgb = rgba[:, :, :3]
+            return rgb[:, :, ::-1].copy()
+
+        # Fallback for older Matplotlib APIs.
+        w, h = self.fig.canvas.get_width_height()
+        rgb_buf = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype=np.uint8)
+        rgb = rgb_buf.reshape(h, w, 3)
+        return rgb[:, :, ::-1].copy()
 
     @staticmethod
     def _set_line3d(line, p0, p1):
@@ -192,9 +215,6 @@ class Live3DPlotter(object):
     def update(self, points_by_color, current_by_color, mode_text='', pose_t=None, pose_R=None,
                pose_history=None, pose_rot_history=None, rigid_axis_len=0.03):
         if not self.ready:
-            return
-        if not self.plt.fignum_exists(self.fig.number):
-            self.ready = False
             return
 
         raw_pts_blocks = []
@@ -296,13 +316,24 @@ class Live3DPlotter(object):
             self.ax_raw.set_title('Raw World Frame - %s' % mode_text)
             self.ax_corr.set_title('Corrected Frame (camera plane z=0) - %s' % mode_text)
 
-        self.fig.canvas.draw_idle()
-        self.plt.pause(0.001)
+        # Cache the current matplotlib figure as BGR image for unified OpenCV preview.
+        try:
+            self.canvas.draw()
+            self.latest_bgr = self._canvas_to_bgr()
+            self.latest_error = ''
+        except Exception as ex:
+            self.latest_bgr = None
+            self.latest_error = str(ex)
+
+    def get_latest_frame(self):
+        if self.latest_bgr is None:
+            return None
+        return self.latest_bgr.copy()
+
+    def get_latest_error(self):
+        return self.latest_error
 
     def close(self):
-        if self.ready and self.fig is not None:
-            try:
-                self.plt.close(self.fig)
-            except Exception:
-                pass
+        self.fig = None
+        self.canvas = None
         self.ready = False

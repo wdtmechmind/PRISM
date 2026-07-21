@@ -46,7 +46,14 @@ def write_task_metadata(session_dir, args, timestamp):
         ('rpi_port', args.rpi_port),
         ('sdk_script', args.sdk_script),
         ('feedback_port', args.feedback_port),
-        ('rpi_sdk_feedback_status', 'not_implemented'),
+        ('rpi_sdk_feedback_status', 'partial_cli_socket'),
+        ('hand_cli_socket', {
+            'ip': getattr(args, 'hand_ip', ''),
+            'port': getattr(args, 'hand_port', 0),
+            'timeout_s': getattr(args, 'hand_timeout_s', 0.0),
+            'settle_time_s': getattr(args, 'hand_settle_time_s', 0.0),
+            'auto_connect': getattr(args, 'hand_auto_connect', 'n'),
+        }),
         ('hik_camera_config', {
             'exposure_us': args.hik_exposure_us,
             'gain': args.hik_gain,

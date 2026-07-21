@@ -24,6 +24,7 @@ from prism.devices.cameras.realsense_camera import (
     build_undistort_maps,
     load_rs_intrinsics,
 )
+from prism.devices.hand import MechHandClient
 from prism.online.display_server import draw_preview
 from prism.online.trajectory_plotter import Live3DPlotter
 from prism.reconstruction.calibration import (
@@ -69,6 +70,11 @@ DEFAULT_CLI_VALUES = {
     'rpi_port': '',
     'sdk_script': '',
     'feedback_port': '',
+    'hand_ip': '127.0.0.1',
+    'hand_port': 60686,
+    'hand_timeout_s': 3.0,
+    'hand_settle_time_s': 1.0,
+    'hand_auto_connect': 'n',
     'calib_json': '',
     'hik_exposure_us': 3000.0,
     'hik_gain': 0.0,
@@ -120,6 +126,9 @@ DEFAULT_CLI_VALUES = {
     'rigid_axis_len': 0.03,
     'track_every': 1,
     'frame_buffer': 15,
+    'preview_target_w': 600,
+    'preview_window_width': 1920,
+    'preview_window_height': 1080,
 }
 
 
@@ -149,6 +158,16 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
                           help='reserved for future dexterous-hand SDK command bridge; currently left blank')
     pipeline.add_argument('--feedback-port', type=str, default=defaults['feedback_port'],
                           help='reserved for future hand feedback input; currently left blank')
+    pipeline.add_argument('--hand-ip', type=str, default=defaults['hand_ip'],
+                          help='mech hand TCP controller IP for in-session pose control')
+    pipeline.add_argument('--hand-port', type=int, default=defaults['hand_port'],
+                          help='mech hand TCP controller port for in-session pose control')
+    pipeline.add_argument('--hand-timeout-s', type=float, default=defaults['hand_timeout_s'],
+                          help='socket timeout for mech hand connection/send')
+    pipeline.add_argument('--hand-settle-time-s', type=float, default=defaults['hand_settle_time_s'],
+                          help='delay after each hand command so motion can complete')
+    pipeline.add_argument('--hand-auto-connect', type=str, default=defaults['hand_auto_connect'],
+                          help='connect to hand at startup (y/n); otherwise connect on first hand key')
 
     device = parser.add_argument_group('device configuration')
     device.add_argument('--calib-json', type=str, default=defaults['calib_json'], help='path to charuco_4cam_result.json')
@@ -217,6 +236,12 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
                           help='run LED tracking every N preview iterations (raise to lighten CPU)')
     tracking.add_argument('--frame-buffer', type=int, default=defaults['frame_buffer'],
                           help='per-camera timestamped frame buffer length for time-based association')
+    tracking.add_argument('--preview-target-w', type=int, default=defaults['preview_target_w'],
+                          help='render width per camera cell in unified preview (larger is clearer but heavier)')
+    tracking.add_argument('--preview-window-width', type=int, default=defaults['preview_window_width'],
+                          help='initial unified preview window width in pixels')
+    tracking.add_argument('--preview-window-height', type=int, default=defaults['preview_window_height'],
+                          help='initial unified preview window height in pixels')
     return parser
 
 
@@ -227,6 +252,7 @@ class SessionManager(object):
         self.rs_auto_exposure = parse_yes_no(args.rs_auto_exposure)
         self.rs_use_undistort = parse_yes_no(args.rs_undistort)
         self.use_viz_3d = parse_yes_no(args.viz_3d)
+        self.hand_auto_connect = parse_yes_no(args.hand_auto_connect)
         self.planned_trials = max(0, int(args.num_trials))
 
         self.hsv_cfg = {
@@ -275,6 +301,20 @@ class SessionManager(object):
         self.ts_csv_writer = None
         self.frame_idx = 0
 
+        self.hand_client = None
+        self.hand_connected = False
+        self.hand_cmd_file = None
+        self.hand_cmd_writer = None
+        self.hand_sdk_cmd_file = None
+        self.hand_sdk_cmd_writer = None
+        self.hand_task_cmd_path = None
+        self.hand_task_cmd_file = None
+        self.hand_task_cmd_writer = None
+        self.hand_last_action = 'none'
+        self.hand_last_command = ''
+        self.hand_last_t_sec = float('nan')
+        self.hand_total_commands = 0
+
     def prepare_session(self):
         args = self.args
         self.cameras = load_calibration(os.path.expanduser(args.calib_json))
@@ -288,6 +328,12 @@ class SessionManager(object):
         self.traj_interp_csv_path = os.path.join(self.output_root, 'trajectory_led_interp.csv')
         self.pose_csv_path = os.path.join(self.output_root, 'rigid_pose_6d.csv')
         self.align_csv_path = os.path.join(self.output_root, 'time_alignment_log.csv')
+        self.hand_task_cmd_path = os.path.join(self.output_root, 'hand_sdk_commands_timeline.csv')
+        self.hand_task_cmd_file = open(self.hand_task_cmd_path, 'w', newline='', encoding='utf-8')
+        self.hand_task_cmd_writer = csv.writer(self.hand_task_cmd_file)
+        self.hand_task_cmd_writer.writerow([
+            't_sec', 'wall_time', 'trial_id', 'trial_time', 'action', 'command', 'status', 'message', 'recording'
+        ])
         task_metadata_path = write_task_metadata(self.output_root, args, timestamp)
         console.rule('PRISM Online Collection')
         console.saved('output folder: %s' % self.output_root)
@@ -296,6 +342,8 @@ class SessionManager(object):
                      % (args.task_name, self.planned_trials if self.planned_trials > 0 else 'unlimited', args.hand_generation))
         if args.rpi_port or args.sdk_script or args.feedback_port:
             console.warning('RPi command bridge, SDK forwarding, and hand feedback logging are placeholders for now.')
+        console.info('hand pose hotkeys enabled via socket target %s:%d'
+                     % (args.hand_ip, int(args.hand_port)))
 
         if args.rs_calib_json.strip():
             rs_K, rs_D, _rs_calib_wh, rs_data = load_rs_intrinsics(os.path.expanduser(args.rs_calib_json))
@@ -372,6 +420,100 @@ class SessionManager(object):
                                          timeout_ms=1000, buffer_len=max(5, args.frame_buffer))
         self.rs_thread.start()
 
+        self.hand_client = MechHandClient(
+            ip=args.hand_ip,
+            port=args.hand_port,
+            timeout_s=args.hand_timeout_s,
+            settle_time_s=args.hand_settle_time_s,
+        )
+        if self.hand_auto_connect:
+            self._connect_hand()
+
+    def _connect_hand(self):
+        if self.hand_client is None:
+            return False
+        if self.hand_connected:
+            return True
+        try:
+            self.hand_client.connect()
+            self.hand_connected = True
+            console.success('hand connected: %s:%d' % (self.args.hand_ip, int(self.args.hand_port)))
+            return True
+        except Exception as exc:
+            console.warning('hand connect failed (%s:%d): %s'
+                            % (self.args.hand_ip, int(self.args.hand_port), str(exc)))
+            self.hand_connected = False
+            return False
+
+    def _log_hand_command(self, wall_time_sec, trial_time_sec, action, command, status, message):
+        t_sec = wall_time_sec - self.t0
+
+        if self.hand_cmd_writer is not None:
+            self.hand_cmd_writer.writerow([
+                '%.6f' % t_sec,
+                '%.6f' % wall_time_sec,
+                '%.6f' % trial_time_sec,
+                action,
+                command,
+                status,
+                message,
+            ])
+        if self.hand_sdk_cmd_writer is not None:
+            self.hand_sdk_cmd_writer.writerow([
+                '%.6f' % t_sec,
+                '%.6f' % wall_time_sec,
+                '%.6f' % trial_time_sec,
+                action,
+                command,
+                status,
+                message,
+            ])
+        if self.hand_task_cmd_writer is not None:
+            self.hand_task_cmd_writer.writerow([
+                '%.6f' % t_sec,
+                '%.6f' % wall_time_sec,
+                self.trial_id if self.recording else 0,
+                '%.6f' % trial_time_sec,
+                action,
+                command,
+                status,
+                message,
+                int(bool(self.recording)),
+            ])
+
+        self.hand_last_action = action
+        self.hand_last_command = command
+        self.hand_last_t_sec = t_sec
+        self.hand_total_commands += 1
+
+        if self.hand_cmd_file is not None:
+            self.hand_cmd_file.flush()
+        if self.hand_sdk_cmd_file is not None:
+            self.hand_sdk_cmd_file.flush()
+        if self.hand_task_cmd_file is not None:
+            self.hand_task_cmd_file.flush()
+
+    def _send_hand_pose(self, pose_name):
+        cmd_preview = ''
+        try:
+            if not self._connect_hand():
+                now = time.time()
+                trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
+                self._log_hand_command(now, trial_elapsed, pose_name, cmd_preview, 'connect_failed', 'connect_failed')
+                return
+            sent = self.hand_client.send_pose(pose_name)
+            cmd_preview = sent
+            now = time.time()
+            trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
+            self._log_hand_command(now, trial_elapsed, pose_name, sent, 'ok', '')
+            console.step('hand pose sent: %s -> %s' % (pose_name, sent))
+        except Exception as exc:
+            self.hand_connected = False
+            now = time.time()
+            trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
+            self._log_hand_command(now, trial_elapsed, pose_name, cmd_preview, 'error', str(exc))
+            console.warning('hand pose send failed: %s (%s)' % (pose_name, str(exc)))
+
     def start_recording(self):
         args = self.args
         if self.recording:
@@ -389,6 +531,16 @@ class SessionManager(object):
         os.makedirs(logs_dir, exist_ok=True)
         touch_placeholder_hand_logs(trial_dir)
         self.current_trial_dir = trial_dir
+
+        hand_log_path = os.path.join(trial_dir, 'hand', 'rpi_commands.csv')
+        self.hand_cmd_file = open(hand_log_path, 'w', newline='', encoding='utf-8')
+        self.hand_cmd_writer = csv.writer(self.hand_cmd_file)
+        self.hand_cmd_writer.writerow(['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message'])
+
+        sdk_log_path = os.path.join(trial_dir, 'hand', 'sdk_commands.csv')
+        self.hand_sdk_cmd_file = open(sdk_log_path, 'w', newline='', encoding='utf-8')
+        self.hand_sdk_cmd_writer = csv.writer(self.hand_sdk_cmd_file)
+        self.hand_sdk_cmd_writer.writerow(['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message'])
 
         self.active_sinks = []
         for cam_i in range(4):
@@ -421,9 +573,9 @@ class SessionManager(object):
             ('status', 'recording'),
             ('start_wall_time', self.trial_start_wall),
             ('hand_generation', args.hand_generation),
-            ('rpi_sdk_feedback_status', 'not_implemented'),
-            ('rpi_commands_log', ''),
-            ('sdk_commands_log', ''),
+            ('rpi_sdk_feedback_status', 'partial_cli_socket'),
+            ('rpi_commands_log', hand_log_path),
+            ('sdk_commands_log', os.path.join('hand', 'sdk_commands.csv')),
             ('hand_feedback_log', ''),
         ])
 
@@ -452,6 +604,18 @@ class SessionManager(object):
             self.ts_csv_file = None
             self.ts_csv_writer = None
 
+        if self.hand_cmd_file is not None:
+            self.hand_cmd_file.flush()
+            self.hand_cmd_file.close()
+            self.hand_cmd_file = None
+            self.hand_cmd_writer = None
+
+        if self.hand_sdk_cmd_file is not None:
+            self.hand_sdk_cmd_file.flush()
+            self.hand_sdk_cmd_file.close()
+            self.hand_sdk_cmd_file = None
+            self.hand_sdk_cmd_writer = None
+
         self.recording = False
         stop_wall = time.time()
         if self.current_trial_dir is not None:
@@ -463,9 +627,9 @@ class SessionManager(object):
                 ('end_wall_time', stop_wall),
                 ('duration_sec', stop_wall - self.trial_start_wall if self.trial_start_wall is not None else 0.0),
                 ('hand_generation', self.args.hand_generation),
-                ('rpi_sdk_feedback_status', 'not_implemented'),
-                ('rpi_commands_log', ''),
-                ('sdk_commands_log', ''),
+                ('rpi_sdk_feedback_status', 'partial_cli_socket'),
+                ('rpi_commands_log', os.path.join('hand', 'rpi_commands.csv')),
+                ('sdk_commands_log', os.path.join('hand', 'sdk_commands.csv')),
                 ('hand_feedback_log', ''),
                 ('frames_written', total_written),
                 ('frames_dropped', total_dropped),
@@ -483,6 +647,11 @@ class SessionManager(object):
 
     def run_loop(self):
         cv2.namedWindow('DexHand HighFps Capture', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(
+            'DexHand HighFps Capture',
+            max(640, int(self.args.preview_window_width)),
+            max(480, int(self.args.preview_window_height)),
+        )
         self.plotter3d = Live3DPlotter(
             enabled=self.use_viz_3d,
             camera_centers=self.camera_centers,
@@ -490,7 +659,8 @@ class SessionManager(object):
         )
 
         console.info('preview started. click preview window to focus keys.')
-        console.info('keys: SPACE start/stop current trial, p pause tracking, r resume tracking, q/ESC finish task')
+        console.info('keys: SPACE start/stop current trial, p pause tracking, r resume tracking, '
+                 '1 grasp, 2 open, 3 three-grasp, 4 index-click, q/ESC finish task')
 
         with open(self.traj_near_csv_path, 'w', newline='', encoding='utf-8') as near_file, \
                 open(self.traj_interp_csv_path, 'w', newline='', encoding='utf-8') as interp_file, \
@@ -653,8 +823,38 @@ class SessionManager(object):
             self.ts_csv_writer.writerow(['%.6f' % now, '%.6f' % trial_elapsed] +
                                         ['%.3f' % f for f in hik_fps] + ['%.3f' % rs_fps_now])
 
-        grid = draw_preview(hik_latest, rs_aligned, obs_near, hik_fps, rs_fps_now,
-                            self.recording, self.trial_id, trial_elapsed)
+        self.plotter3d.update(
+            self.track_near['traj_points'], point_near,
+            mode_text='NEAREST | ' + ' | '.join(['%s:%s' % (n, mode_near[n]) for n in COLOR_ORDER] + ['pose:%s' % pose_mode]),
+            pose_t=pose_xyz,
+            pose_R=pose_rot,
+            pose_history=self.pose_history,
+            pose_rot_history=self.pose_rot_history,
+            rigid_axis_len=args.rigid_axis_len,
+        )
+
+        hand_info = {
+            'connected': self.hand_connected,
+            'last_action': self.hand_last_action,
+            'last_command': self.hand_last_command,
+            'last_t_sec': self.hand_last_t_sec,
+            'total_commands': self.hand_total_commands,
+        }
+
+        grid = draw_preview(
+            hik_latest,
+            rs_aligned,
+            obs_near,
+            hik_fps,
+            rs_fps_now,
+            self.recording,
+            self.trial_id,
+            trial_elapsed,
+            target_w=max(320, int(args.preview_target_w)),
+            traj_image=self.plotter3d.get_latest_frame(),
+            hand_info=hand_info,
+            traj_error=self.plotter3d.get_latest_error(),
+        )
 
         cv2.putText(grid, 'hik sync spread=%.1f ms | rs offset=%s ms' % (
             hik_spread_ms, ('%.1f' % rs_offset_ms) if rs_offset_ms == rs_offset_ms else 'n/a'),
@@ -679,16 +879,6 @@ class SessionManager(object):
 
         cv2.imshow('DexHand HighFps Capture', grid)
 
-        self.plotter3d.update(
-            self.track_near['traj_points'], point_near,
-            mode_text='NEAREST | ' + ' | '.join(['%s:%s' % (n, mode_near[n]) for n in COLOR_ORDER] + ['pose:%s' % pose_mode]),
-            pose_t=pose_xyz,
-            pose_R=pose_rot,
-            pose_history=self.pose_history,
-            pose_rot_history=self.pose_rot_history,
-            rigid_axis_len=args.rigid_axis_len,
-        )
-
         key = cv2.waitKey(1) & 0xFF
         if key in (ord('p'), ord('P')):
             self.paused = True
@@ -701,6 +891,14 @@ class SessionManager(object):
                     return False
             else:
                 self.start_recording()
+        elif key == ord('1'):
+            self._send_hand_pose('grasp')
+        elif key == ord('2'):
+            self._send_hand_pose('open')
+        elif key == ord('3'):
+            self._send_hand_pose('three_grasp')
+        elif key == ord('4'):
+            self._send_hand_pose('index_click')
         elif key in (ord('q'), ord('Q'), 27):
             return False
         return True
@@ -741,6 +939,19 @@ class SessionManager(object):
                 pass
         if self.plotter3d is not None:
             self.plotter3d.close()
+        if self.hand_task_cmd_file is not None:
+            try:
+                self.hand_task_cmd_file.flush()
+                self.hand_task_cmd_file.close()
+            except Exception:
+                pass
+            self.hand_task_cmd_file = None
+            self.hand_task_cmd_writer = None
+        if self.hand_client is not None:
+            try:
+                self.hand_client.close()
+            except Exception:
+                pass
         cv2.destroyAllWindows()
         try:
             MvCamera.MV_CC_Finalize()
@@ -757,6 +968,8 @@ class SessionManager(object):
 
         console.saved('trajectory (nearest) csv saved: %s' % self.traj_near_csv_path)
         console.saved('trajectory (interp)  csv saved: %s' % self.traj_interp_csv_path)
+        if self.hand_task_cmd_path:
+            console.saved('hand sdk timeline csv saved: %s' % self.hand_task_cmd_path)
         self.handle_post_process_choice()
         console.done('done.')
 

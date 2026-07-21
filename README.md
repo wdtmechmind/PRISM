@@ -48,7 +48,19 @@ scripts/collect_task.sh \
 - `Space`: 开始/停止当前 trial 录制
 - `p`: 暂停轨迹更新
 - `r`: 恢复轨迹更新
+- `1`: 五指抓握（`@ROG<0>&`）
+- `2`: 五指张开（`@ROG<1>&`）
+- `3`: 三指抓握（`@ROG<6>&`）
+- `4`: 食指单击（`@ROG<15>&`）
 - `q` 或 `ESC`: 结束采集任务
+
+手部控制连接参数（同一条 `prism-collect` 命令生效）：
+
+- `--hand-ip`: 机械手控制器 IP
+- `--hand-port`: 机械手控制器 TCP 端口
+- `--hand-timeout-s`: socket 超时
+- `--hand-settle-time-s`: 每次指令后的等待时间
+- `--hand-auto-connect y|n`: 是否在采集启动时主动连接；默认 `n`（首次按 1/2/3/4 时懒连接）
 
 ## 3. 在线采集能力
 
@@ -63,8 +75,9 @@ scripts/collect_task.sh \
 - 时间插值轨迹：`trajectory_led_interp.csv`
 - Hik/RealSense 时间对齐质量日志：`time_alignment_log.csv`
 - 刚体 6D pose：`rigid_pose_6d.csv`
-- OpenCV 预览窗口 overlay 显示 3D 点状态、同步误差、rigid6d xyz/rpy
-- Matplotlib 3D 窗口显示四个 LED 点轨迹、dex hand 刚体中心轨迹和刚体坐标轴
+- 单一统一预览窗口：左侧保留原视频/overlay，右侧嵌入原 3D 轨迹视图
+- 预览新增 hand 状态区：socket 连接状态、最近动作、最近命令及其时间戳、累计命令数
+- open-loop hand SDK 指令日志，时间戳与轨迹 `t_sec` 使用同一时间基准
 
 单个 LED 轨迹重建的必要条件：该 LED 至少被两个 Hik 相机同时检测到。dex hand 6D pose 的必要条件：当前帧至少有 3 个已经进入刚体模型的 LED 被成功三角化；不要求每个 LED 被每台相机看到，也不要求四个 LED 每帧都同时可见。刚体模型会先用第一帧可用的非共线 3 个 LED 初始化，后续如果第四个 LED 出现，会自动加入模型。若条件不足，预览会显示 `rigid6d: need >=3 modeled LEDs`。
 
@@ -89,6 +102,9 @@ configs/collection/default_online.yaml
 - `--writer-queue`: 每路写盘队列长度
 - `--track-every`: 每 N 次 preview loop 做一次 LED tracking
 - `--frame-buffer`: 每路相机时间戳帧缓存长度
+- `--preview-target-w`: 统一预览里每个相机子图的渲染宽度（更大更清晰，但更耗 CPU）
+- `--preview-window-width`: 统一预览窗口初始宽度
+- `--preview-window-height`: 统一预览窗口初始高度
 - `--viz-3d`: 是否打开 Matplotlib 3D 轨迹窗口
 - `--rigid-axis-len`: 3D 窗口里刚体坐标轴长度，单位米
 
@@ -102,10 +118,11 @@ configs/collection/default_online.yaml
 data/raw/
   task_YYYYmmdd_HHMMSS_task-name/
     task_metadata.yaml
-  trajectory_led_nearest.csv
-  trajectory_led_interp.csv
+    trajectory_led_nearest.csv
+    trajectory_led_interp.csv
     rigid_pose_6d.csv
     time_alignment_log.csv
+    hand_sdk_commands_timeline.csv
     realsense_intrinsics.json
     trial_000001/
       metadata.yaml
@@ -128,7 +145,11 @@ data/raw/
         fps_log.csv
 ```
 
-注意：`hand/` 里的三个 CSV 当前是占位文件，真实 RPi/SDK/反馈记录还未实现。
+说明：
+
+- `hand_sdk_commands_timeline.csv` 记录任务级 open-loop 指令，`t_sec` 与轨迹 CSV 对齐。
+- `trial_xxxxxx/hand/sdk_commands.csv` 与 `trial_xxxxxx/hand/rpi_commands.csv` 记录 trial 期间指令。
+- `hand_feedback.csv` 仍是占位文件（反馈链路未实现）。
 
 ## 6. 离线严格对齐重建
 
@@ -189,6 +210,51 @@ trial_000001/
 - 硬件触发/软件触发配置入口
 
 当前采集模式是 Hik 自由运行 + 时间戳对齐。若需要硬件触发同步，需要继续在 PRISM native 的 MVS adapter 和 session 参数中实现。
+
+## 7.5 手姿态 CLI 控制（RPi 就绪前）
+
+在 RPi 串口桥接完成前，可以直接通过 TCP socket 控制机械手预设姿态。推荐直接在在线采集 CLI 内控制（同一个窗口同时控制采集和手势）。
+
+示例：
+
+```bash
+cd /mnt/projects-8tb/PRISM
+
+scripts/collect_task.sh \
+  --config configs/collection/default_online.yaml \
+  --task-name grasp-demo \
+  --num-trials 20 \
+  --output-dir data/raw \
+  --hand-ip 127.0.0.1 \
+  --hand-port 60686
+```
+
+运行中直接按 `1/2/3/4` 发送姿态命令，按 `Space` 开始/停止录制。
+
+安装/更新项目后可使用：
+
+```bash
+cd /mnt/projects-8tb/PRISM
+pip install -e .
+
+prism-hand --ip 127.0.0.1 --port 60686
+```
+
+进入交互菜单后按键：
+
+- `1`: 五指抓握（`@ROG<0>&`）
+- `2`: 五指张开（`@ROG<1>&`）
+- `3`: 三指抓握（`@ROG<6>&`）
+- `4`: 食指单击（`@ROG<15>&`）
+- `0`: 退出
+
+也可一条命令发送：
+
+```bash
+prism-hand --ip 127.0.0.1 --port 60686 --pose grasp
+prism-hand --ip 127.0.0.1 --port 60686 --pose open
+prism-hand --ip 127.0.0.1 --port 60686 --raw-cmd '@ROG<6>&'
+```
 
 ## 8. 开发与验证
 
