@@ -32,10 +32,17 @@ rs_exposure: 260.0
 rs_gain: 64.0
 rs_brightness: 0.0
 
-y_h_low: 15
+r_h_low: 5
+r_s_low: 80
+r_v_low: 80
+r_h_high: 24
+r_s_high: 255
+r_v_high: 255
+
+y_h_low: 25
 y_s_low: 80
 y_v_low: 80
-y_h_high: 40
+y_h_high: 45
 y_s_high: 255
 y_v_high: 255
 

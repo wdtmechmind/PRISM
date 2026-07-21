@@ -45,7 +45,7 @@ class Live3DPlotter(object):
             return
 
         self.plt.ion()
-        self.fig = self.plt.figure('LED 3D Trajectory (3 Colors)', figsize=(12, 5))
+        self.fig = self.plt.figure('DexHand LED 3D Trajectory', figsize=(12, 5))
         self.ax_raw = self.fig.add_subplot(121, projection='3d')
         self.ax_raw.set_xlabel('X (m)')
         self.ax_raw.set_ylabel('Y (m)')

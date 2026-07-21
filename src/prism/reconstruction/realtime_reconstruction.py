@@ -4,13 +4,15 @@ import numpy as np
 from prism.common.timebase import pick_bracket, pick_nearest
 
 
-COLOR_ORDER = ['yellow', 'blue', 'green']
+COLOR_ORDER = ['red', 'yellow', 'blue', 'green']
 COLOR_BRG = {
+    'red': (0, 0, 255),
     'yellow': (0, 220, 255),
     'blue': (255, 120, 0),
     'green': (0, 220, 0),
 }
 COLOR_MPL = {
+    'red': 'tab:red',
     'yellow': 'gold',
     'blue': 'tab:blue',
     'green': 'tab:green',
@@ -42,14 +44,30 @@ def matrix_to_rpy_zyx(rot):
     return roll, pitch, yaw
 
 
-def build_body_model(world_points_by_color):
-    py = np.asarray(world_points_by_color['yellow'], dtype=np.float64).reshape(3)
-    pb = np.asarray(world_points_by_color['blue'], dtype=np.float64).reshape(3)
-    pg = np.asarray(world_points_by_color['green'], dtype=np.float64).reshape(3)
+def _select_body_frame_colors(world_points_by_color):
+    preferred = [name for name in ['yellow', 'blue', 'green'] if name in world_points_by_color]
+    if len(preferred) >= 3:
+        return preferred[:3]
 
-    origin = (py + pb + pg) / 3.0
-    ex = normalize_vec(pb - py)
-    vg = pg - py
+    available = [name for name in COLOR_ORDER if name in world_points_by_color]
+    if len(available) < 3:
+        return []
+    return available[:3]
+
+
+def build_body_model(world_points_by_color):
+    frame_colors = _select_body_frame_colors(world_points_by_color)
+    if len(frame_colors) < 3:
+        return None
+
+    p0 = np.asarray(world_points_by_color[frame_colors[0]], dtype=np.float64).reshape(3)
+    p1 = np.asarray(world_points_by_color[frame_colors[1]], dtype=np.float64).reshape(3)
+    p2 = np.asarray(world_points_by_color[frame_colors[2]], dtype=np.float64).reshape(3)
+
+    model_colors = [name for name in COLOR_ORDER if name in world_points_by_color]
+    origin = np.mean([np.asarray(world_points_by_color[name], dtype=np.float64).reshape(3) for name in model_colors], axis=0)
+    ex = normalize_vec(p1 - p0)
+    vg = p2 - p0
     ez_raw = np.cross(ex, vg)
     if np.linalg.norm(ez_raw) < 1e-10:
         return None
@@ -58,7 +76,7 @@ def build_body_model(world_points_by_color):
 
     rot_wb = np.column_stack([ex, ey, ez])
     model = {}
-    for name in COLOR_ORDER:
+    for name in model_colors:
         pw = np.asarray(world_points_by_color[name], dtype=np.float64).reshape(3)
         model[name] = rot_wb.T @ (pw - origin)
 
@@ -66,7 +84,21 @@ def build_body_model(world_points_by_color):
         'model_points': model,
         'init_origin': origin,
         'init_rot_wb': rot_wb,
+        'frame_colors': frame_colors,
     }
+
+
+def update_body_model(model_points_by_color, observed_points_by_color, pose_rot, pose_trans):
+    pose_rot = np.asarray(pose_rot, dtype=np.float64).reshape(3, 3)
+    pose_trans = np.asarray(pose_trans, dtype=np.float64).reshape(3)
+    added = []
+    for name in COLOR_ORDER:
+        if name in model_points_by_color or name not in observed_points_by_color:
+            continue
+        pw = np.asarray(observed_points_by_color[name], dtype=np.float64).reshape(3)
+        model_points_by_color[name] = pose_rot.T @ (pw - pose_trans)
+        added.append(name)
+    return added
 
 
 def estimate_pose_from_model(model_points_by_color, observed_points_by_color):
@@ -97,7 +129,14 @@ def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     lower = np.array(hsv_low, dtype=np.uint8)
     upper = np.array(hsv_high, dtype=np.uint8)
-    mask = cv2.inRange(hsv, lower, upper)
+    if int(lower[0]) <= int(upper[0]):
+        mask = cv2.inRange(hsv, lower, upper)
+    else:
+        low_a = np.array([lower[0], lower[1], lower[2]], dtype=np.uint8)
+        high_a = np.array([179, upper[1], upper[2]], dtype=np.uint8)
+        low_b = np.array([0, lower[1], lower[2]], dtype=np.uint8)
+        high_b = np.array([upper[0], upper[1], upper[2]], dtype=np.uint8)
+        mask = cv2.bitwise_or(cv2.inRange(hsv, low_a, high_a), cv2.inRange(hsv, low_b, high_b))
 
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)

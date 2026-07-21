@@ -1,6 +1,6 @@
 # PRISM 灵巧手多相机采集
 
-PRISM 当前提供一套 native 在线采集流程和离线严格对齐重建流程，用于 4 路 Hik 高速相机、1 路 Intel RealSense D435、三色 LED 轨迹和刚体 6D pose 记录。
+PRISM 当前提供一套 native 在线采集流程和离线严格对齐重建流程，用于 4 路 Hik 高速相机、1 路 Intel RealSense D435、red/yellow/blue/green 四个刚性安装 LED 的轨迹和 dex hand 刚体 6D pose 记录。
 
 当前默认入口已经不再桥接旧的 MVS Recording 在线脚本；旧 fallback 环境变量和旧离线脚本入口也已经从 PRISM 源码、脚本和文档中移除。
 
@@ -58,15 +58,15 @@ scripts/collect_task.sh \
 - 1 路 RealSense 彩色流采集
 - 每路视频异步写盘，写盘队列满时丢帧保护采集节奏
 - 实时显示 Hik/RealSense fps
-- 三色 LED HSV 检测：yellow、blue、green
-- 最近邻时间对齐轨迹：`trajectory_3color_nearest.csv`
-- 时间插值轨迹：`trajectory_3color_interp.csv`
+- 四个 LED HSV 检测：red、yellow、blue、green
+- 最近邻时间对齐轨迹：`trajectory_led_nearest.csv`
+- 时间插值轨迹：`trajectory_led_interp.csv`
 - Hik/RealSense 时间对齐质量日志：`time_alignment_log.csv`
 - 刚体 6D pose：`rigid_pose_6d.csv`
 - OpenCV 预览窗口 overlay 显示 3D 点状态、同步误差、rigid6d xyz/rpy
-- Matplotlib 3D 窗口显示三色点轨迹、刚体中心轨迹和刚体坐标轴
+- Matplotlib 3D 窗口显示四个 LED 点轨迹、dex hand 刚体中心轨迹和刚体坐标轴
 
-6D pose 的必要条件：yellow、blue、green 三个 LED 都要被至少两个 Hik 相机同时检测到。否则预览会显示 `rigid6d: waiting for all three colors`。
+单个 LED 轨迹重建的必要条件：该 LED 至少被两个 Hik 相机同时检测到。dex hand 6D pose 的必要条件：当前帧至少有 3 个已经进入刚体模型的 LED 被成功三角化；不要求每个 LED 被每台相机看到，也不要求四个 LED 每帧都同时可见。刚体模型会先用第一帧可用的非共线 3 个 LED 初始化，后续如果第四个 LED 出现，会自动加入模型。若条件不足，预览会显示 `rigid6d: need >=3 modeled LEDs`。
 
 ## 4. 默认配置
 
@@ -92,6 +92,8 @@ configs/collection/default_online.yaml
 - `--viz-3d`: 是否打开 Matplotlib 3D 轨迹窗口
 - `--rigid-axis-len`: 3D 窗口里刚体坐标轴长度，单位米
 
+注意：这里的 `red`、`yellow`、`blue`、`green` 是刚体上 LED 的身份标签，不一定等于 Hik 图像里肉眼看到的颜色。当前 Hik 画面里 red LED 偏橙/黄，因此默认 `r_h_low/r_h_high` 使用 orange/amber 区间，`yellow` 区间相应后移以减少重叠。若更换 LED、曝光或白平衡，应重新调 `configs/collection/default_online.yaml` 里的 HSV 阈值。
+
 ## 5. 输出结构
 
 一次任务会生成类似结构：
@@ -100,8 +102,8 @@ configs/collection/default_online.yaml
 data/raw/
   task_YYYYmmdd_HHMMSS_task-name/
     task_metadata.yaml
-    trajectory_3color_nearest.csv
-    trajectory_3color_interp.csv
+  trajectory_led_nearest.csv
+  trajectory_led_interp.csv
     rigid_pose_6d.csv
     time_alignment_log.csv
     realsense_intrinsics.json

@@ -41,6 +41,7 @@ from prism.reconstruction.realtime_reconstruction import (
     estimate_pose_from_model,
     make_track_state,
     matrix_to_rpy_zyx,
+    update_body_model,
 )
 from prism.recording.metadata_writer import (
     resolve_output_root,
@@ -87,10 +88,16 @@ DEFAULT_CLI_VALUES = {
     'rs_exposure': 260.0,
     'rs_gain': 64.0,
     'rs_brightness': 0.0,
-    'y_h_low': 15,
+    'r_h_low': 5,
+    'r_s_low': 80,
+    'r_v_low': 80,
+    'r_h_high': 24,
+    'r_s_high': 255,
+    'r_v_high': 255,
+    'y_h_low': 25,
     'y_s_low': 80,
     'y_v_low': 80,
-    'y_h_high': 40,
+    'y_h_high': 45,
     'y_s_high': 255,
     'y_v_high': 255,
     'b_h_low': 90,
@@ -171,6 +178,13 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
     rs.add_argument('--rs-brightness', type=float, default=defaults['rs_brightness'])
 
     tracking = parser.add_argument_group('online trajectory tracking')
+    tracking.add_argument('--r-h-low', type=int, default=defaults['r_h_low'])
+    tracking.add_argument('--r-s-low', type=int, default=defaults['r_s_low'])
+    tracking.add_argument('--r-v-low', type=int, default=defaults['r_v_low'])
+    tracking.add_argument('--r-h-high', type=int, default=defaults['r_h_high'])
+    tracking.add_argument('--r-s-high', type=int, default=defaults['r_s_high'])
+    tracking.add_argument('--r-v-high', type=int, default=defaults['r_v_high'])
+
     tracking.add_argument('--y-h-low', type=int, default=defaults['y_h_low'])
     tracking.add_argument('--y-s-low', type=int, default=defaults['y_s_low'])
     tracking.add_argument('--y-v-low', type=int, default=defaults['y_v_low'])
@@ -216,6 +230,7 @@ class SessionManager(object):
         self.planned_trials = max(0, int(args.num_trials))
 
         self.hsv_cfg = {
+            'red': ((args.r_h_low, args.r_s_low, args.r_v_low), (args.r_h_high, args.r_s_high, args.r_v_high)),
             'yellow': ((args.y_h_low, args.y_s_low, args.y_v_low), (args.y_h_high, args.y_s_high, args.y_v_high)),
             'blue': ((args.b_h_low, args.b_s_low, args.b_v_low), (args.b_h_high, args.b_s_high, args.b_v_high)),
             'green': ((args.g_h_low, args.g_s_low, args.g_v_low), (args.g_h_high, args.g_s_high, args.g_v_high)),
@@ -269,8 +284,8 @@ class SessionManager(object):
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         self.task_timestamp = timestamp
         self.output_root = resolve_output_root(os.path.expanduser(args.output_dir), timestamp, args.task_name)
-        self.traj_near_csv_path = os.path.join(self.output_root, 'trajectory_3color_nearest.csv')
-        self.traj_interp_csv_path = os.path.join(self.output_root, 'trajectory_3color_interp.csv')
+        self.traj_near_csv_path = os.path.join(self.output_root, 'trajectory_led_nearest.csv')
+        self.traj_interp_csv_path = os.path.join(self.output_root, 'trajectory_led_interp.csv')
         self.pose_csv_path = os.path.join(self.output_root, 'rigid_pose_6d.csv')
         self.align_csv_path = os.path.join(self.output_root, 'time_alignment_log.csv')
         task_metadata_path = write_task_metadata(self.output_root, args, timestamp)
@@ -488,7 +503,8 @@ class SessionManager(object):
             header = ['t_sec', 'color', 'x_m', 'y_m', 'z_m', 'mode', 'num_views', 'max_norm_reproj_err', 'visible_cams']
             near_writer.writerow(header)
             interp_writer.writerow(header)
-            pose_writer.writerow(['t_sec', 'mode', 'x_m', 'y_m', 'z_m', 'roll_deg', 'pitch_deg', 'yaw_deg'])
+            pose_writer.writerow(['t_sec', 'mode', 'num_leds_used', 'modeled_leds', 'visible_leds',
+                                  'x_m', 'y_m', 'z_m', 'roll_deg', 'pitch_deg', 'yaw_deg'])
             align_writer.writerow([
                 't_ref_sec', 'hik0_ts', 'hik1_ts', 'hik2_ts', 'hik3_ts',
                 'hik_spread_ms', 'rs_ts', 'rs_offset_ms',
@@ -577,18 +593,29 @@ class SessionManager(object):
         pose_rpy_deg = None
         pose_rot = None
         pose_now = None
+        pose_used_names = []
+        modeled_names = []
+        visible_names = []
 
         valid_points = {name: point_near[name] for name in COLOR_ORDER if point_near[name] is not None}
-        if len(valid_points) == len(COLOR_ORDER):
+        visible_names = [name for name in COLOR_ORDER if name in valid_points]
+        if len(valid_points) >= 3:
             if self.rigid_model is None:
                 self.rigid_model = build_body_model(valid_points)
                 if self.rigid_model is not None:
-                    console.success('rigid model initialized from first full three-color observation.')
+                    console.success('rigid model initialized from LEDs: %s.'
+                                    % ','.join(self.rigid_model['model_points'].keys()))
 
             if self.rigid_model is not None:
+                modeled_names = [name for name in COLOR_ORDER if name in self.rigid_model['model_points']]
                 est = estimate_pose_from_model(self.rigid_model['model_points'], valid_points)
                 if est is not None:
                     pose_rot, pose_xyz = est
+                    pose_used_names = [name for name in modeled_names if name in valid_points]
+                    added_model_names = update_body_model(self.rigid_model['model_points'], valid_points, pose_rot, pose_xyz)
+                    if added_model_names:
+                        console.success('added LEDs to rigid model: %s.' % ','.join(added_model_names))
+                        modeled_names = [name for name in COLOR_ORDER if name in self.rigid_model['model_points']]
                     roll, pitch, yaw = matrix_to_rpy_zyx(pose_rot)
                     pose_rpy_deg = np.degrees(np.array([roll, pitch, yaw], dtype=np.float64))
                     pose_now = np.array([
@@ -606,7 +633,8 @@ class SessionManager(object):
             if len(self.pose_rot_history) > args.max_traj_points:
                 self.pose_rot_history = self.pose_rot_history[-args.max_traj_points:]
             pose_writer.writerow([
-                '%.6f' % (ref_time - self.t0), pose_mode,
+                '%.6f' % (ref_time - self.t0), pose_mode, len(pose_used_names),
+                ','.join(modeled_names), ','.join(visible_names),
                 '%.9f' % pose_now[0], '%.9f' % pose_now[1], '%.9f' % pose_now[2],
                 '%.6f' % pose_now[3], '%.6f' % pose_now[4], '%.6f' % pose_now[5],
             ])
@@ -646,7 +674,7 @@ class SessionManager(object):
             cv2.putText(grid, 'rpy=(%.2f, %.2f, %.2f) deg' % (pose_rpy_deg[0], pose_rpy_deg[1], pose_rpy_deg[2]),
                         (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
         else:
-            cv2.putText(grid, 'rigid6d: waiting for all three colors',
+            cv2.putText(grid, 'rigid6d: need >=3 modeled LEDs (visible=%d)' % len(visible_names),
                         (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (220, 220, 220), 2, cv2.LINE_AA)
 
         cv2.imshow('DexHand HighFps Capture', grid)
