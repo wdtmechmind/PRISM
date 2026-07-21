@@ -24,7 +24,7 @@ from prism.devices.cameras.realsense_camera import (
     build_undistort_maps,
     load_rs_intrinsics,
 )
-from prism.devices.hand import MechHandClient
+from prism.devices.hand import GESTURE_ID_TO_NAME, GESTURE_ID_TO_POSE, GESTURE_TABLE, MechHandClient
 from prism.online.display_server import draw_preview
 from prism.online.trajectory_plotter import Live3DPlotter
 from prism.reconstruction.calibration import (
@@ -314,6 +314,11 @@ class SessionManager(object):
         self.hand_last_command = ''
         self.hand_last_t_sec = float('nan')
         self.hand_total_commands = 0
+        self.hand_digit_buffer = ''
+        self.hand_digit_last_wall = 0.0
+        self.hand_digit_timeout_s = 0.65
+        self.hand_ui_regions = []
+        self.hand_click_gesture = None
 
     def prepare_session(self):
         args = self.args
@@ -493,26 +498,123 @@ class SessionManager(object):
         if self.hand_task_cmd_file is not None:
             self.hand_task_cmd_file.flush()
 
-    def _send_hand_pose(self, pose_name):
+    def _send_hand_gesture(self, gesture_id):
+        pose_name = GESTURE_ID_TO_POSE.get(int(gesture_id), 'unknown')
+        gesture_name = GESTURE_ID_TO_NAME.get(int(gesture_id), 'unknown')
+        action_text = '%02d:%s' % (int(gesture_id), pose_name)
         cmd_preview = ''
         try:
             if not self._connect_hand():
                 now = time.time()
                 trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
-                self._log_hand_command(now, trial_elapsed, pose_name, cmd_preview, 'connect_failed', 'connect_failed')
+                self._log_hand_command(now, trial_elapsed, action_text, cmd_preview, 'connect_failed', 'connect_failed')
                 return
-            sent = self.hand_client.send_pose(pose_name)
+            sent = self.hand_client.send_gesture(int(gesture_id))
             cmd_preview = sent
             now = time.time()
             trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
-            self._log_hand_command(now, trial_elapsed, pose_name, sent, 'ok', '')
-            console.step('hand pose sent: %s -> %s' % (pose_name, sent))
+            self._log_hand_command(now, trial_elapsed, action_text, sent, 'ok', gesture_name)
+            console.step('hand pose sent: [%d] %s -> %s' % (int(gesture_id), gesture_name, sent))
         except Exception as exc:
             self.hand_connected = False
             now = time.time()
             trial_elapsed = (now - self.trial_start_wall) if (self.recording and self.trial_start_wall is not None) else 0.0
-            self._log_hand_command(now, trial_elapsed, pose_name, cmd_preview, 'error', str(exc))
-            console.warning('hand pose send failed: %s (%s)' % (pose_name, str(exc)))
+            self._log_hand_command(now, trial_elapsed, action_text, cmd_preview, 'error', str(exc))
+            console.warning('hand pose send failed: [%d] %s (%s)' % (int(gesture_id), gesture_name, str(exc)))
+
+    def _submit_hand_digit_buffer(self):
+        if not self.hand_digit_buffer:
+            return
+        try:
+            gesture_id = int(self.hand_digit_buffer)
+        except ValueError:
+            self.hand_digit_buffer = ''
+            return
+        self.hand_digit_buffer = ''
+        if 1 <= gesture_id <= 17:
+            self._send_hand_gesture(gesture_id)
+        else:
+            console.warning('invalid hand gesture id: %d (valid range: 1-17)' % gesture_id)
+
+    def _on_digit_key(self, digit_char, now_wall):
+        if digit_char < '0' or digit_char > '9':
+            return
+
+        self.hand_digit_last_wall = now_wall
+
+        # 2..9 are unambiguous single gestures; 1 may be 1 or 10..17.
+        if not self.hand_digit_buffer:
+            if digit_char == '1':
+                self.hand_digit_buffer = '1'
+                self.hand_digit_last_wall = now_wall
+                return
+            if digit_char == '0':
+                return
+            self.hand_digit_buffer = digit_char
+            self._submit_hand_digit_buffer()
+            return
+
+        # Only a leading '1' should be buffered for two-digit gesture ids.
+        if self.hand_digit_buffer == '1':
+            if '0' <= digit_char <= '7':
+                self.hand_digit_buffer = '1' + digit_char
+                self._submit_hand_digit_buffer()
+                return
+
+            # 18/19 are invalid; treat as separate key presses.
+            self._submit_hand_digit_buffer()
+            if digit_char != '0':
+                self.hand_digit_buffer = digit_char
+                self._submit_hand_digit_buffer()
+            return
+
+        # Fallback safety path.
+        self._submit_hand_digit_buffer()
+        if digit_char != '0':
+            self.hand_digit_buffer = digit_char
+            self._submit_hand_digit_buffer()
+
+    def _on_mouse_event(self, event, x, y, _flags, _userdata):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        for region in self.hand_ui_regions:
+            x1 = int(region.get('x1', -1))
+            y1 = int(region.get('y1', -1))
+            x2 = int(region.get('x2', -1))
+            y2 = int(region.get('y2', -1))
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                self.hand_click_gesture = int(region.get('gesture_id', 0))
+                return
+
+    def _estimate_preview_target_w(self, hik_latest, rs_latest):
+        requested = max(320, int(self.args.preview_target_w))
+
+        ratios = []
+        for frame in hik_latest:
+            if frame is not None:
+                h, w = frame.shape[:2]
+                if w > 0:
+                    ratios.append(float(h) / float(w))
+        if rs_latest is not None:
+            rh, rw = rs_latest.shape[:2]
+            if rw > 0:
+                ratios.append(float(rh) / float(rw))
+        if not ratios:
+            ratios = [720.0 / 1280.0]
+
+        max_ratio = max(ratios)
+        window_w = max(960, int(self.args.preview_window_width))
+        window_h = max(640, int(self.args.preview_window_height))
+
+        # Grid has 2 columns and 3 rows based on max cell height.
+        max_by_h = int((window_h - 24) / max(1e-6, 3.0 * max_ratio))
+
+        # Keep room for right-side control panel so total width does not exceed window width.
+        min_panel_w = 480
+        max_by_w = int((window_w - min_panel_w) / 2.0)
+
+        fitted = min(requested, max_by_h, max_by_w)
+        return max(320, fitted)
 
     def start_recording(self):
         args = self.args
@@ -652,6 +754,7 @@ class SessionManager(object):
             max(640, int(self.args.preview_window_width)),
             max(480, int(self.args.preview_window_height)),
         )
+        cv2.setMouseCallback('DexHand HighFps Capture', self._on_mouse_event)
         self.plotter3d = Live3DPlotter(
             enabled=self.use_viz_3d,
             camera_centers=self.camera_centers,
@@ -660,7 +763,9 @@ class SessionManager(object):
 
         console.info('preview started. click preview window to focus keys.')
         console.info('keys: SPACE start/stop current trial, p pause tracking, r resume tracking, '
-                 '1 grasp, 2 open, 3 three-grasp, 4 index-click, q/ESC finish task')
+                     'click hand gesture buttons or type hand gesture id 1-17 '
+                     '(for 10-17 type two digits quickly), '
+                     'Enter submit pending 1, Backspace clear pending input, q/ESC finish task')
 
         with open(self.traj_near_csv_path, 'w', newline='', encoding='utf-8') as near_file, \
                 open(self.traj_interp_csv_path, 'w', newline='', encoding='utf-8') as interp_file, \
@@ -839,9 +944,13 @@ class SessionManager(object):
             'last_command': self.hand_last_command,
             'last_t_sec': self.hand_last_t_sec,
             'total_commands': self.hand_total_commands,
+            'pending_digits': self.hand_digit_buffer,
+            'gesture_hints': [(gid, name) for gid, _pose, name in GESTURE_TABLE],
         }
 
-        grid = draw_preview(
+        effective_target_w = self._estimate_preview_target_w(hik_latest, rs_aligned)
+
+        draw_out = draw_preview(
             hik_latest,
             rs_aligned,
             obs_near,
@@ -850,11 +959,15 @@ class SessionManager(object):
             self.recording,
             self.trial_id,
             trial_elapsed,
-            target_w=max(320, int(args.preview_target_w)),
+            target_w=effective_target_w,
             traj_image=self.plotter3d.get_latest_frame(),
             hand_info=hand_info,
             traj_error=self.plotter3d.get_latest_error(),
+            return_ui_meta=True,
+            composite_target_w=max(640, int(args.preview_window_width)),
         )
+        grid, ui_meta = draw_out
+        self.hand_ui_regions = ui_meta.get('gesture_regions', [])
 
         cv2.putText(grid, 'hik sync spread=%.1f ms | rs offset=%s ms' % (
             hik_spread_ms, ('%.1f' % rs_offset_ms) if rs_offset_ms == rs_offset_ms else 'n/a'),
@@ -891,16 +1004,23 @@ class SessionManager(object):
                     return False
             else:
                 self.start_recording()
-        elif key == ord('1'):
-            self._send_hand_pose('grasp')
-        elif key == ord('2'):
-            self._send_hand_pose('open')
-        elif key == ord('3'):
-            self._send_hand_pose('three_grasp')
-        elif key == ord('4'):
-            self._send_hand_pose('index_click')
+        elif key in (8, 127):
+            self.hand_digit_buffer = ''
+        elif key in (10, 13):
+            self._submit_hand_digit_buffer()
+        elif ord('0') <= key <= ord('9'):
+            self._on_digit_key(chr(key), now)
         elif key in (ord('q'), ord('Q'), 27):
             return False
+
+        if self.hand_click_gesture is not None:
+            gid = int(self.hand_click_gesture)
+            self.hand_click_gesture = None
+            if 1 <= gid <= 17:
+                self._send_hand_gesture(gid)
+
+        if self.hand_digit_buffer and (now - self.hand_digit_last_wall) > self.hand_digit_timeout_s:
+            self._submit_hand_digit_buffer()
         return True
 
     def handle_post_process_choice(self):

@@ -72,6 +72,6 @@ max_predict_frames: 6
 viz_3d: 'y'
 track_every: 1
 frame_buffer: 15
-preview_target_w: 600
-preview_window_width: 1920
-preview_window_height: 1080
+preview_target_w: 700
+preview_window_width: 2560
+preview_window_height: 1440

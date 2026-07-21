@@ -1,26 +1,19 @@
 import argparse
 import sys
 
-from prism.devices.hand import MechHandClient
+from prism.devices.hand import GESTURE_TABLE, MechHandClient
 
 
-MENU_TEXT = """
-========= MechHand =========
-
-1 Five-finger grasp
-2 Five-finger open
-3 Three-finger grasp
-4 Index click
-0 Exit
-""".strip('\n')
+def _build_menu_text():
+    lines = ['========= MechHand =========', '']
+    for gesture_id, pose_name, display_name in GESTURE_TABLE:
+        lines.append('%d %s [%s]' % (gesture_id, display_name, pose_name))
+    lines += ['', '0 Exit']
+    return '\n'.join(lines)
 
 
-KEY_TO_POSE = {
-    '1': 'grasp',
-    '2': 'open',
-    '3': 'three_grasp',
-    '4': 'index_click',
-}
+MENU_TEXT = _build_menu_text()
+POSE_CHOICES = sorted(set([row[1] for row in GESTURE_TABLE] + ['grasp', 'open', 'three_grasp', 'index_click']))
 
 
 def build_parser():
@@ -33,8 +26,10 @@ def build_parser():
     parser.add_argument('--timeout-s', type=float, default=3.0, help='Socket connect/send timeout')
     parser.add_argument('--settle-time-s', type=float, default=1.0,
                         help='Delay after each command so the hand can move')
-    parser.add_argument('--pose', type=str, default='', choices=['', 'grasp', 'open', 'three_grasp', 'index_click'],
+    parser.add_argument('--pose', type=str, default='', choices=[''] + POSE_CHOICES,
                         help='One-shot pose command. Leave empty to enter interactive mode')
+    parser.add_argument('--gesture-id', type=int, default=0,
+                        help='One-shot gesture id (1-17). Applied before --pose when set')
     parser.add_argument('--raw-cmd', type=str, default='',
                         help='One-shot raw command, e.g. @ROG<0>&. When set, it overrides --pose')
     return parser
@@ -46,11 +41,14 @@ def run_interactive(client):
         key = input('> ').strip()
         if key == '0':
             return 0
-        if key not in KEY_TO_POSE:
-            print('Unknown input. Please choose 0/1/2/3/4.')
+        if not key.isdigit():
+            print('Unknown input. Please choose 0..17.')
             continue
-        pose = KEY_TO_POSE[key]
-        sent = client.send_pose(pose)
+        gesture_id = int(key)
+        if gesture_id < 1 or gesture_id > 17:
+            print('Unknown input. Please choose 1..17.')
+            continue
+        sent = client.send_gesture(gesture_id)
         print('Sent:', sent)
 
 
@@ -67,6 +65,11 @@ def main(argv=None):
 
             if args.raw_cmd:
                 sent = client.send_raw(args.raw_cmd)
+                print('Sent:', sent)
+                return 0
+
+            if args.gesture_id:
+                sent = client.send_gesture(args.gesture_id)
                 print('Sent:', sent)
                 return 0
 

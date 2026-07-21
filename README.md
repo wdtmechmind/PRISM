@@ -48,11 +48,14 @@ scripts/collect_task.sh \
 - `Space`: 开始/停止当前 trial 录制
 - `p`: 暂停轨迹更新
 - `r`: 恢复轨迹更新
-- `1`: 五指抓握（`@ROG<0>&`）
-- `2`: 五指张开（`@ROG<1>&`）
-- `3`: 三指抓握（`@ROG<6>&`）
-- `4`: 食指单击（`@ROG<15>&`）
+- 在统一预览窗口右侧 hand 控制面板中直接点击手势按钮 `1..17`（推荐）
+- 也可在预览窗口键盘输入手势编号 `1..17`：
+  - `2..9` 输入后立即发送
+  - `1` 可能是 `1` 或 `10..17`：可继续输入第二位，或按 `Enter` 立即发送 `1`
+  - `Backspace` 清除待发送编号
 - `q` 或 `ESC`: 结束采集任务
+
+手势协议规则：`gesture_id = ROG_value + 1`。例如：`gesture_id=1 -> @ROG<0>&`，`gesture_id=17 -> @ROG<16>&`。
 
 手部控制连接参数（同一条 `prism-collect` 命令生效）：
 
@@ -105,6 +108,9 @@ configs/collection/default_online.yaml
 - `--preview-target-w`: 统一预览里每个相机子图的渲染宽度（更大更清晰，但更耗 CPU）
 - `--preview-window-width`: 统一预览窗口初始宽度
 - `--preview-window-height`: 统一预览窗口初始高度
+
+说明：统一预览会尽量把拼接结果宽度对齐到窗口宽度，减少 OpenCV 二次缩放导致的发糊；若仍偏糊，可优先增大 `--preview-window-width`，其次增大 `--preview-target-w`。
+另外，系统会根据窗口高度自动下调子图宽度，避免超过窗口高度后被再次缩放（这会让视频和文字一起变糊）。
 - `--viz-3d`: 是否打开 Matplotlib 3D 轨迹窗口
 - `--rigid-axis-len`: 3D 窗口里刚体坐标轴长度，单位米
 
@@ -230,6 +236,7 @@ scripts/collect_task.sh \
 ```
 
 运行中直接按 `1/2/3/4` 发送姿态命令，按 `Space` 开始/停止录制。
+运行中可直接输入 `1..17` 发送对应手势，右侧 hand 控制面板会显示完整编号说明。
 
 安装/更新项目后可使用：
 
@@ -242,17 +249,15 @@ prism-hand --ip 127.0.0.1 --port 60686
 
 进入交互菜单后按键：
 
-- `1`: 五指抓握（`@ROG<0>&`）
-- `2`: 五指张开（`@ROG<1>&`）
-- `3`: 三指抓握（`@ROG<6>&`）
-- `4`: 食指单击（`@ROG<15>&`）
+- `1..17`: 对应发送手势 1..17（协议中 `ROG = 手势号 - 1`）
 - `0`: 退出
 
 也可一条命令发送：
 
 ```bash
-prism-hand --ip 127.0.0.1 --port 60686 --pose grasp
-prism-hand --ip 127.0.0.1 --port 60686 --pose open
+prism-hand --ip 127.0.0.1 --port 60686 --gesture-id 1
+prism-hand --ip 127.0.0.1 --port 60686 --gesture-id 17
+prism-hand --ip 127.0.0.1 --port 60686 --pose five_grasp
 prism-hand --ip 127.0.0.1 --port 60686 --raw-cmd '@ROG<6>&'
 ```
 
