@@ -62,7 +62,18 @@ class UsbCameraGrabber(object):
         self.cam = MvCamera()
         self.started_grab = False
 
-    def open_and_prepare(self, use_hardware_trigger, use_software_trigger, exposure_us=None, gain=None, frame_rate=None):
+    def open_and_prepare(self, exposure_us=None, gain=None, frame_rate=None, trigger_source='Line0',
+                         gpio_output_line=None):
+        """
+        Initialize and prepare camera for hardware-triggered capture.
+
+        Args:
+            exposure_us: Exposure time in microseconds
+            gain: Gain value
+            frame_rate: Acquisition frame rate (fps)
+            trigger_source: 'Software' (master) or 'Line0' (slave hardware trigger)
+            gpio_output_line: GPIO line number for strobe output (master only, typically 1)
+        """
         ret = self.cam.MV_CC_CreateHandle(self.device_info)
         if ret != 0:
             raise Exception('create handle fail[0x%x], serial=%s' % (ret, self.serial_number))
@@ -74,28 +85,25 @@ class UsbCameraGrabber(object):
         self.disable_auto_features()
         self.apply_manual_params(exposure_us=exposure_us, gain=gain, frame_rate=frame_rate)
 
-        if use_hardware_trigger:
-            ret = self.cam.MV_CC_SetEnumValueByString('TriggerMode', 'On')
-            if ret != 0:
-                raise Exception('set trigger mode on fail[0x%x], serial=%s' % (ret, self.serial_number))
+        # Configure trigger mode (Software for master, Line0 for slaves)
+        self.cam.MV_CC_SetEnumValueByString('TriggerSelector', 'FrameStart')  # best-effort
 
-            ret = self.cam.MV_CC_SetEnumValueByString('TriggerSource', 'Line0')
-            if ret != 0:
-                raise Exception('set trigger source line0 fail[0x%x], serial=%s' % (ret, self.serial_number))
+        ret = self.cam.MV_CC_SetEnumValueByString('TriggerMode', 'On')
+        if ret != 0:
+            raise Exception('set trigger mode on fail[0x%x], serial=%s' % (ret, self.serial_number))
 
+        ret = self.cam.MV_CC_SetEnumValueByString('TriggerSource', trigger_source)
+        if ret != 0:
+            raise Exception('set trigger source %s fail[0x%x], serial=%s' % (trigger_source, ret, self.serial_number))
+
+        # For hardware trigger inputs (slave cameras), trigger on falling edge of Line0
+        if trigger_source not in ('Software',):
+            self.cam.MV_CC_SetEnumValueByString('TriggerActivation', 'FallingEdge')
             self.cam.MV_CC_SetIntValue('LineDebouncerTime', 2)
-        elif use_software_trigger:
-            ret = self.cam.MV_CC_SetEnumValueByString('TriggerMode', 'On')
-            if ret != 0:
-                raise Exception('set trigger mode on fail[0x%x], serial=%s' % (ret, self.serial_number))
-
-            ret = self.cam.MV_CC_SetEnumValueByString('TriggerSource', 'Software')
-            if ret != 0:
-                raise Exception('set trigger source software fail[0x%x], serial=%s' % (ret, self.serial_number))
-        else:
-            ret = self.cam.MV_CC_SetEnumValue('TriggerMode', MV_TRIGGER_MODE_OFF)
-            if ret != 0:
-                raise Exception('set trigger mode off fail[0x%x], serial=%s' % (ret, self.serial_number))
+        
+        # Configure GPIO output for triggering other cameras if specified
+        if gpio_output_line is not None:
+            self._configure_gpio_output(gpio_output_line)
 
         ret = self.cam.MV_CC_SetBayerCvtQuality(1)
         if ret != 0:
@@ -107,6 +115,59 @@ class UsbCameraGrabber(object):
         self.started_grab = True
 
         return self.readback_capture_params()
+
+    def _configure_gpio_output(self, line_number):
+        """
+        Configure GPIO line as Strobe output on the master camera.
+
+        Strobe source = ExposureActive: signal goes HIGH the moment the master
+        camera starts its own exposure, so slave cameras on Line0 all start
+        exposure at the exact same instant.
+
+        GenICam nodes used:
+            LineSelector  (enum)  – select the physical line
+            LineMode      (enum)  – "Strobe"
+            LineSource    (enum)  – "ExposureActive"
+            StrobeEnable  (bool)  – enable strobe output
+
+        Args:
+            line_number: GPIO line number (1 for master Line1 output)
+        """
+        line_name = 'Line%d' % line_number
+
+        # 1. Select the line
+        ret = self.cam.MV_CC_SetEnumValueByString('LineSelector', line_name)
+        if ret != 0:
+            print('[%s] warning: LineSelector=%s failed[0x%x]' % (self.serial_number, line_name, ret))
+            return
+
+        # 2. Set LineMode to Strobe (only supported output mode on Line1 for MV-CS004-10UC)
+        ret = self.cam.MV_CC_SetEnumValueByString('LineMode', 'Strobe')
+        if ret != 0:
+            print('[%s] warning: LineMode=Strobe failed[0x%x]' % (self.serial_number, ret))
+            return
+
+        # 3. Set strobe source to FrameTriggerWait:
+        #    HIGH while master waits for software trigger, goes LOW (falling edge) the instant
+        #    the master receives the trigger and begins exposure.
+        #    Slave cameras trigger on this falling edge -> all cameras expose simultaneously.
+        ret = self.cam.MV_CC_SetEnumValueByString('LineSource', 'FrameTriggerWait')
+        if ret != 0:
+            print('[%s] warning: LineSource=FrameTriggerWait failed[0x%x]' % (self.serial_number, ret))
+            return
+
+        # 4. Enable strobe output
+        ret = self.cam.MV_CC_SetBoolValue('StrobeEnable', True)
+        if ret != 0:
+            print('[%s] warning: StrobeEnable=True failed[0x%x]' % (self.serial_number, ret))
+            return
+
+        print('[%s] GPIO %s configured as Strobe output (source=FrameTriggerWait, slaves use FallingEdge)' % (self.serial_number, line_name))
+
+
+    def software_trigger_once(self):
+        """Send one software trigger pulse to the master camera."""
+        self.cam.MV_CC_SetCommandValue('TriggerSoftware')
 
     def _try_set_enum_by_string(self, node_name, value_name):
         ret = self.cam.MV_CC_SetEnumValueByString(node_name, value_name)
@@ -181,7 +242,7 @@ class UsbCameraGrabber(object):
                 print('[%s] %s readback unsupported or failed[0x%x]' % (self.serial_number, node_name, ret))
         return result
 
-    def grab_one_rgb(self, timeout_ms=1500):
+    def grab_one_bgr(self, timeout_ms=1500):
         st_out_frame = MV_FRAME_OUT()
         memset(byref(st_out_frame), 0, sizeof(MV_FRAME_OUT))
 
@@ -192,7 +253,7 @@ class UsbCameraGrabber(object):
         try:
             width = st_out_frame.stFrameInfo.nWidth
             height = st_out_frame.stFrameInfo.nHeight
-            rgb_size = width * height * 3
+            bgr_size = width * height * 3
 
             st_convert_param = MV_CC_PIXEL_CONVERT_PARAM_EX()
             memset(byref(st_convert_param), 0, sizeof(MV_CC_PIXEL_CONVERT_PARAM_EX))
@@ -201,24 +262,19 @@ class UsbCameraGrabber(object):
             st_convert_param.pSrcData = st_out_frame.pBufAddr
             st_convert_param.nSrcDataLen = st_out_frame.stFrameInfo.nFrameLen
             st_convert_param.enSrcPixelType = st_out_frame.stFrameInfo.enPixelType
-            st_convert_param.enDstPixelType = PixelType_Gvsp_RGB8_Packed
-            st_convert_param.pDstBuffer = (c_ubyte * rgb_size)()
-            st_convert_param.nDstBufferSize = rgb_size
+            st_convert_param.enDstPixelType = PixelType_Gvsp_BGR8_Packed
+            st_convert_param.pDstBuffer = (c_ubyte * bgr_size)()
+            st_convert_param.nDstBufferSize = bgr_size
 
             ret = self.cam.MV_CC_ConvertPixelTypeEx(st_convert_param)
             if ret != 0:
                 raise Exception('convert pixel fail[0x%x], serial=%s' % (ret, self.serial_number))
 
-            rgb_bytes = string_at(st_convert_param.pDstBuffer, st_convert_param.nDstLen)
-            image_rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(height, width, 3)
-            return image_rgb, int(st_out_frame.stFrameInfo.nFrameNum)
+            bgr_bytes = string_at(st_convert_param.pDstBuffer, st_convert_param.nDstLen)
+            image_bgr = np.frombuffer(bgr_bytes, dtype=np.uint8).reshape(height, width, 3)
+            return image_bgr, int(st_out_frame.stFrameInfo.nFrameNum)
         finally:
             self.cam.MV_CC_FreeImageBuffer(st_out_frame)
-
-    def software_trigger_once(self):
-        ret = self.cam.MV_CC_SetCommandValue('TriggerSoftware')
-        if ret != 0:
-            raise Exception('software trigger fail[0x%x], serial=%s' % (ret, self.serial_number))
 
     def stop_and_close(self):
         if self.started_grab:

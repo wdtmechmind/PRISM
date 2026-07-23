@@ -12,7 +12,7 @@ import numpy as np
 from prism.common import console
 from prism.common.config import load_yaml_config, merge_defaults
 from prism.common.timebase import pick_nearest
-from prism.devices.cameras.highspeed_camera import HikCaptureThread
+from prism.devices.cameras.highspeed_camera import HikCaptureThread, SoftwareTriggerThread
 from prism.devices.cameras.mvs_camera import (
     MvCamera,
     UsbCameraGrabber,
@@ -133,10 +133,6 @@ DEFAULT_CLI_VALUES = {
     'preview_window_width': 1920,
     'preview_window_height': 1080,
     'ui_backend': 'opencv',
-    'temporal_calib': 'y',
-    'temporal_calib_tag_id': 0,
-    'temporal_calib_tag_delay_s': 3.0,
-    'temporal_calib_tag_display_s': 1.5,
 }
 
 
@@ -253,20 +249,6 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
     tracking.add_argument('--ui-backend', type=str, default=defaults['ui_backend'], choices=['opencv', 'qt'],
                           help='preview UI backend; qt keeps keyboard/CLI control and avoids OpenCV window path')
 
-    tcalib = parser.add_argument_group('temporal delay calibration (runs once after cameras open)')
-    tcalib.add_argument('--temporal-calib', type=str, default=defaults['temporal_calib'],
-                        help='run AprilTag temporal calibration at session start (y/n, default: y)')
-    tcalib.add_argument('--skip-temporal-calib', action='store_true',
-                        help='shorthand for --temporal-calib n')
-    tcalib.add_argument('--temporal-calib-tag-id', type=int,
-                        default=defaults['temporal_calib_tag_id'],
-                        help='AprilTag ID to flash; -1 = any (default: 0)')
-    tcalib.add_argument('--temporal-calib-tag-delay-s', type=float,
-                        default=defaults['temporal_calib_tag_delay_s'],
-                        help='seconds between cameras-ready and tag appearing on screen (default: 3)')
-    tcalib.add_argument('--temporal-calib-tag-display-s', type=float,
-                        default=defaults['temporal_calib_tag_display_s'],
-                        help='seconds to keep tag visible on screen (default: 1.5)')
     return parser
 
 
@@ -301,6 +283,7 @@ class SessionManager(object):
         self.recorders = []
         self.hik_threads = []
         self.hik_serials = []
+        self.trigger_thread = None  # SoftwareTriggerThread for master camera
         self.rs_thread = None
         self.rs_grabber = None
         self.plotter3d = None
@@ -346,6 +329,7 @@ class SessionManager(object):
         self.hand_click_gesture = None
         self.preview_backend = None
         self.window_name = 'DexHand HighFps Capture'
+        self._closed = False
 
     def prepare_session(self):
         args = self.args
@@ -411,19 +395,43 @@ class SessionManager(object):
 
         selected_infos = [usb_devices[idx] for idx in selected]
         readbacks = []
+        
+        # Identify master camera (DA8165486) for trigger generation
+        master_camera_serial = 'DA8165486'
+        master_cam_index = None
+        
         for cam_i, (_, dev_info, model, serial) in enumerate(selected_infos):
             serial_safe = serial if serial else ('cam%d' % cam_i)
             self.hik_serials.append(serial_safe)
             print('selected hik%d: model=%s serial=%s' % (cam_i, model, serial_safe))
+            
+            if serial == master_camera_serial:
+                master_cam_index = cam_i
 
             rec = UsbCameraGrabber(dev_info, serial_safe, model)
-            rb = rec.open_and_prepare(
-                use_hardware_trigger=False,
-                use_software_trigger=False,
-                exposure_us=args.hik_exposure_us,
-                gain=args.hik_gain,
-                frame_rate=args.hik_frame_rate,
-            )
+            
+            # Configure cameras for hardware trigger synchronization
+            # Master camera (DA8165486): software trigger + GPIO Line1 Strobe → slave Line0
+            # Slave cameras: hardware trigger on Line0 (falling edge from master GPIO)
+            if serial == master_camera_serial:
+                print('  -> Configuring as MASTER camera (software trigger + GPIO Line1 strobe → slaves)')
+                rb = rec.open_and_prepare(
+                    exposure_us=args.hik_exposure_us,
+                    gain=args.hik_gain,
+                    frame_rate=args.hik_frame_rate,
+                    trigger_source='Software',
+                    gpio_output_line=1,
+                )
+            else:
+                print('  -> Configuring as SLAVE camera with hardware trigger on Line0')
+                rb = rec.open_and_prepare(
+                    exposure_us=args.hik_exposure_us,
+                    gain=args.hik_gain,
+                    frame_rate=args.hik_frame_rate,
+                    trigger_source='Line0',  # Slaves receive trigger on Line0
+                    gpio_output_line=None,
+                )
+            
             self.recorders.append(rec)
             readbacks.append(rb)
 
@@ -444,9 +452,17 @@ class SessionManager(object):
         self.rs_grabber.open_and_prepare()
 
         for cam_i, rec in enumerate(self.recorders):
-            th = HikCaptureThread(rec, cam_i, self.hik_serials[cam_i], timeout_ms=200, buffer_len=args.frame_buffer)
+            th = HikCaptureThread(rec, cam_i, self.hik_serials[cam_i], timeout_ms=200,
+                                  buffer_len=args.frame_buffer)
             th.start()
             self.hik_threads.append(th)
+
+        # Start dedicated software trigger thread for master camera
+        if master_cam_index is not None:
+            master_grabber = self.recorders[master_cam_index]
+            self.trigger_thread = SoftwareTriggerThread(master_grabber, fps=args.hik_frame_rate)
+            self.trigger_thread.start()
+            print('  -> Master software trigger thread started at %.0f fps' % args.hik_frame_rate)
 
         self.rs_thread = RSCaptureThread(self.rs_grabber, self.rs_undistort_maps, args.rs_width, args.rs_height,
                                          timeout_ms=1000, buffer_len=max(5, args.frame_buffer))
@@ -1069,18 +1085,31 @@ class SessionManager(object):
     def handle_post_process_choice(self):
         choice = self.args.post_process
         if choice == 'ask':
-            choice = 'now' if console.ask_yes_no('online collection finished. run offline post-processing now?') else 'later'
+            choice = 'now' if console.ask_yes_no('online collection finished. run post-processing now?') else 'later'
 
         if choice == 'now':
-            console.warning('offline post-processing entrypoint is not implemented yet; raw data is ready at: %s' % self.output_root)
+            console.section('Post-Processing: Trajectory Analysis')
+            try:
+                from prism.processing.trajectory_analyzer import analyze_task_directory
+                analyze_task_directory(self.output_root)
+                console.success('trajectory analysis complete')
+            except Exception as e:
+                console.warning(f'trajectory analysis failed: {e}')
+                import traceback
+                traceback.print_exc()
+            console.saved('raw data ready at: %s' % self.output_root)
         else:
-            console.saved('post-processing deferred. raw data is ready at: %s' % self.output_root)
+            console.saved('post-processing deferred. raw data ready at: %s' % self.output_root)
 
     def close(self):
         """
         Comprehensive cleanup that ensures all threads, files, and resources are properly closed.
         Uses longer timeouts and handles cleanup failures gracefully.
         """
+        if self._closed:
+            return
+        self._closed = True
+
         console.info('[cleanup] starting graceful shutdown...')
         
         # Stop any active recording
@@ -1102,6 +1131,12 @@ class SessionManager(object):
             self.active_sinks = []
 
         # Stop camera capture threads
+        if self.trigger_thread is not None:
+            try:
+                self.trigger_thread.stop()
+                self.trigger_thread.join(timeout=1.0)
+            except Exception as e:
+                console.warning('[cleanup] error stopping trigger thread: %s' % e)
         console.info('[cleanup] stopping %d HIK camera threads...' % len(self.hik_threads))
         for th in self.hik_threads:
             try:
@@ -1202,33 +1237,10 @@ class SessionManager(object):
         
         console.success('[cleanup] shutdown complete')
 
-    def _run_temporal_calib(self):
-        """Run AprilTag temporal calibration using the already-open camera threads."""
-        args = self.args
-        if getattr(args, 'skip_temporal_calib', False) or not parse_yes_no(args.temporal_calib):
-            console.info('temporal calibration skipped (--skip-temporal-calib)')
-            return
-        try:
-            from prism.recording.temporal_calibration import run_session_temporal_calibration
-            run_session_temporal_calibration(
-                hik_threads=self.hik_threads,
-                rs_thread=self.rs_thread,
-                hik_serials=self.hik_serials,
-                rs_serial=args.rs_serial.strip() or None,
-                output_dir=self.output_root,
-                tag_id=args.temporal_calib_tag_id,
-                tag_delay_s=args.temporal_calib_tag_delay_s,
-                tag_display_s=args.temporal_calib_tag_display_s,
-            )
-        except Exception as exc:
-            console.warning('temporal calibration failed: %s' % exc)
-            console.warning('continuing without temporal offsets.')
-
     def run(self):
         try:
             self.prepare_session()
             self.open_devices()
-            self._run_temporal_calib()
             self.run_loop()
         finally:
             self.close()

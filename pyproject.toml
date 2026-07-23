@@ -5,12 +5,15 @@ requires-python = ">=3.8"
 dependencies = [
     "PyYAML>=6.0.0",
     "rich>=13.0.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.3.0",
 ]
 
 [project.scripts]
 prism-collect = "prism.cli.collect:main"
 prism-rebuild-aligned = "prism.processing.offline_rebuild:main"
 prism-hand = "prism.cli.hand_control:main"
+prism-analyze-trajectory = "prism.processing.trajectory_analyzer:main"
 
 [build-system]
 requires = ["setuptools>=64"]

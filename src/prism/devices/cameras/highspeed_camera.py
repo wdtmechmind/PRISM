@@ -1,10 +1,60 @@
+import ctypes
 import threading
 import time
 from collections import deque
 
-import cv2
-
 from prism.common.timebase import FpsMeter
+
+# ctypes handle to default C library; usleep() releases the GIL while sleeping
+_libc = ctypes.CDLL(None)
+
+
+class SoftwareTriggerThread(threading.Thread):
+    """
+    Fires software trigger pulses at a fixed rate.
+
+    Design:
+      Phase 1 – ctypes usleep() for most of each interval.
+                usleep is a C call so Python GIL is released automatically,
+                letting UI and grab threads run freely.  Unlike time.sleep(),
+                it avoids the expensive setswitchinterval overhead.
+      Phase 2 – pure spin for the final 0.5 ms for precise edge timing.
+                0.5 ms GIL hold out of 3.33 ms interval = ~15 % GIL time.
+
+    If the OS scheduler overshoots and we are already past next_t when Phase 1
+    ends, we skip Phase 2, fire immediately, then reset next_t to `now` to
+    avoid burst-firing the camera with back-to-back triggers faster than its
+    minimum inter-trigger time.
+    """
+
+    def __init__(self, grabber, fps):
+        super(SoftwareTriggerThread, self).__init__(daemon=True)
+        self.grabber = grabber
+        self.interval = 1.0 / fps
+        self.stop_flag = threading.Event()
+
+    def run(self):
+        next_t = time.perf_counter()
+        interval = self.interval
+        while not self.stop_flag.is_set():
+            # Phase 1: ctypes sleep releases GIL so other threads can run
+            remaining = next_t - time.perf_counter()
+            if remaining > 0.0005:
+                sleep_us = int((remaining - 0.0005) * 1_000_000)
+                _libc.usleep(ctypes.c_uint(max(1, sleep_us)))
+            # Phase 2: spin last 0.5 ms for precise timing
+            while time.perf_counter() < next_t:
+                pass
+            self.grabber.software_trigger_once()
+            next_t += interval
+            # If scheduler jitter caused us to overshoot, skip ahead by one interval
+            # to avoid firing a second trigger immediately after this one
+            now = time.perf_counter()
+            if next_t < now:
+                next_t = now + interval
+
+    def stop(self):
+        self.stop_flag.set()
 
 
 class HikCaptureThread(threading.Thread):
@@ -41,9 +91,8 @@ class HikCaptureThread(threading.Thread):
     def run(self):
         while not self.stop_flag.is_set():
             try:
-                img_rgb, frame_num = self.grabber.grab_one_rgb(timeout_ms=self.timeout_ms)
+                img_bgr, frame_num = self.grabber.grab_one_bgr(timeout_ms=self.timeout_ms)
                 cap_t = time.time()
-                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
             except Exception:
                 continue
 

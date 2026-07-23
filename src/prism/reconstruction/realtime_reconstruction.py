@@ -125,8 +125,7 @@ def estimate_pose_from_model(model_points_by_color, observed_points_by_color):
     return rot, trans
 
 
-def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+def build_hsv_mask(hsv, hsv_low, hsv_high):
     lower = np.array(hsv_low, dtype=np.uint8)
     upper = np.array(hsv_high, dtype=np.uint8)
     if int(lower[0]) <= int(upper[0]):
@@ -141,6 +140,12 @@ def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return mask
+
+
+def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    mask = build_hsv_mask(hsv, hsv_low, hsv_high)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -312,6 +317,13 @@ def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writ
             observations = observations_by_color[name]
             x_meas = None
             err_dict = None
+            if len(observations) == 0:
+                mode_by_color[name] = 'no_detection'
+            elif len(observations) == 1:
+                mode_by_color[name] = 'insufficient_views'
+            else:
+                mode_by_color[name] = 'triangulation_rejected'
+
             if len(observations) >= 2:
                 x_meas, err_dict = robust_triangulate(observations, cameras, args.max_norm_reproj_error)
 

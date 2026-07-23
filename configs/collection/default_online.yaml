@@ -1,5 +1,11 @@
 # PRISM online collection defaults.
 # CLI flags override these values, for example: --task-name grasp-demo --num-trials 20
+#
+# NOTE: As of this version, all HIK cameras use HARDWARE TRIGGER SYNCHRONIZATION:
+#   - Master camera (DA8165486): Software trigger + GPIO Line1 output
+#   - Slave cameras (cam1-3): Hardware trigger on GPIO Line0
+# Temporal calibration (AprilTag-based) is DISABLED since hardware trigger provides
+# frame-level synchronization (~1 ms precision).
 
 task_name: dexhand_task
 num_trials: 0
