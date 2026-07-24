@@ -254,6 +254,97 @@ def tracking_coverage(data):
     return results, total
 
 
+def _split_runs(t, dt_gap):
+    """Split a time array into contiguous [start, end) runs where consecutive dt <= dt_gap."""
+    if len(t) == 0:
+        return []
+    runs = []
+    start = 0
+    for i in range(1, len(t)):
+        if t[i] - t[i - 1] > dt_gap:
+            runs.append((start, i))
+            start = i
+    runs.append((start, len(t)))
+    return runs
+
+
+def _moving_average(seg, window):
+    """Centered moving average along axis 0 with a shrinking window at the edges."""
+    n = len(seg)
+    half = window // 2
+    out = np.empty_like(seg, dtype=np.float64)
+    csum = np.concatenate([np.zeros((1, seg.shape[1])), np.cumsum(seg, axis=0)], axis=0)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        out[i] = (csum[hi] - csum[lo]) / (hi - lo)
+    return out
+
+
+def frame_consistency(data, smooth_window=5, dt_gap_factor=2.5):
+    """
+    Frame-to-frame consistency / motion jitter (works during motion, not just static).
+
+    For each LED, temporal smoothness is characterized independently of the true
+    motion by separating high-frequency jitter from the low-frequency trajectory:
+
+      - median/p95/max_step_mm : inter-frame displacement magnitude (mm), describes
+        how much the LED actually moves between frames (motion magnitude + spikes).
+      - jitter_rms_mm / jitter_p95_mm : RMS / P95 of the high-pass residual
+        (raw − centered moving average), i.e. deviation from the smooth trajectory.
+        This is the frame-to-frame jitter and is largely independent of true motion.
+      - accel_rms_mm : RMS of the discrete second difference (jerkiness proxy).
+
+    Only consecutive samples whose dt <= dt_gap_factor * median(dt) are used, so
+    tracking dropouts do not inflate the metrics.
+    """
+    results = {}
+    for color in COLORS:
+        if color not in data:
+            continue
+        d = data[color]
+        t, xyz = d['t'], d['xyz']
+        if len(t) < 2:
+            continue
+        dt = np.diff(t)
+        med_dt = float(np.median(dt)) if len(dt) else 0.0
+        dt_gap = med_dt * dt_gap_factor if med_dt > 0 else np.inf
+
+        steps_mm, resid_list, accel_mm = [], [], []
+        for s, e in _split_runs(t, dt_gap):
+            seg = xyz[s:e]
+            n = len(seg)
+            if n >= 2:
+                steps_mm.append(np.linalg.norm(np.diff(seg, axis=0), axis=1) * 1000.0)
+            if n >= 3:
+                accel_mm.append(np.linalg.norm(np.diff(seg, n=2, axis=0), axis=1) * 1000.0)
+            if n >= smooth_window:
+                resid_list.append((seg - _moving_average(seg, smooth_window)) * 1000.0)
+
+        if not steps_mm:
+            continue
+        steps_all = np.concatenate(steps_mm)
+        entry = {
+            'n': int(len(t)),
+            'median_step_mm': float(np.median(steps_all)),
+            'p95_step_mm': float(np.percentile(steps_all, 95)),
+            'max_step_mm': float(np.max(steps_all)),
+            'jitter_rms_mm': None,
+            'jitter_p95_mm': None,
+            'accel_rms_mm': None,
+        }
+        if resid_list:
+            resid_all = np.concatenate(resid_list, axis=0)
+            resid_norm = np.linalg.norm(resid_all, axis=1)
+            entry['jitter_rms_mm'] = float(np.sqrt(np.mean(resid_norm ** 2)))
+            entry['jitter_p95_mm'] = float(np.percentile(resid_norm, 95))
+        if accel_mm:
+            accel_all = np.concatenate(accel_mm)
+            entry['accel_rms_mm'] = float(np.sqrt(np.mean(accel_all ** 2)))
+        results[color] = entry
+    return results
+
+
 # ─────────────────────────── Report printing ────────────────────────────
 
 
@@ -398,6 +489,30 @@ def print_accuracy_report(traj_path, rigid_path=None,
         else:
             print('  6DOF 数据不足')
 
+    # 6. Frame-to-frame consistency / motion jitter
+    fc = frame_consistency(data)
+    print()
+    print(_header('6. 帧间一致性 / 运动抖动（全程，含运动段）'))
+    if fc:
+        print(f'  {"LED":<8}  {"帧数":>5}  {"中位步长/mm":>11}  {"最大步长/mm":>11}  {"抖动RMS/mm":>10}  {"抖动P95/mm":>10}  {"加速度RMS/mm":>12}')
+        print(f'  {"─"*8}  {"─"*5}  {"─"*11}  {"─"*11}  {"─"*10}  {"─"*10}  {"─"*12}')
+        for color in COLORS:
+            if color not in fc:
+                continue
+            e = fc[color]
+            jr = f'{e["jitter_rms_mm"]:.3f}' if e['jitter_rms_mm'] is not None else '  n/a'
+            jp = f'{e["jitter_p95_mm"]:.3f}' if e['jitter_p95_mm'] is not None else '  n/a'
+            ar = f'{e["accel_rms_mm"]:.3f}' if e['accel_rms_mm'] is not None else '  n/a'
+            print(
+                f'  {color:<8}  {e["n"]:>5}  '
+                f'{e["median_step_mm"]:>11.3f}  {e["max_step_mm"]:>11.3f}  '
+                f'{jr:>10}  {jp:>10}  {ar:>12}'
+            )
+        print()
+        print('  抖动RMS = 原始轨迹相对滑动平均的高通残差，反映帧间抖动（基本独立于真实运动）')
+    else:
+        print('  帧数不足，无法评估帧间一致性')
+
     print()
     print(_sep())
     print()
@@ -412,4 +527,5 @@ def print_accuracy_report(traj_path, rigid_path=None,
         'rigid_distance_consistency': rdc,
         'static_position_noise_mm': static_position_noise(data, sw_t0, sw_t1) if sw_t0 else None,
         'pose_noise': static_pose_noise(rigid, sw_t0, sw_t1),
+        'frame_consistency': fc,
     }
