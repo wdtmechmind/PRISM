@@ -12,6 +12,7 @@ dependencies = [
 [project.scripts]
 prism-collect = "prism.cli.collect:main"
 prism-rebuild-aligned = "prism.processing.offline_rebuild:main"
+prism-reconstruct-trials = "prism.processing.offline_reconstruct:main"
 prism-hand = "prism.cli.hand_control:main"
 prism-analyze-trajectory = "prism.processing.trajectory_analyzer:main"
 

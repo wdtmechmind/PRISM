@@ -691,6 +691,7 @@ class SessionManager(object):
         self.hand_sdk_cmd_writer.writerow(['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message'])
 
         self.active_sinks = []
+        self.trial_start_wall = time.time()
         for cam_i in range(4):
             fps = self.hik_threads[cam_i].fps_meter.fps()
             if fps < 1.0:
@@ -698,7 +699,8 @@ class SessionManager(object):
             path = os.path.join(cameras_dir, 'hik%d_%s.mp4' % (cam_i, self.hik_serials[cam_i]))
             sink = VideoSink(path, fps, max_queue=args.writer_queue,
                              brightness_alpha=args.rec_brightness_alpha,
-                             brightness_beta=args.rec_brightness_beta)
+                             brightness_beta=args.rec_brightness_beta,
+                             trial_start_wall=self.trial_start_wall)
             self.hik_threads[cam_i].set_sink(sink)
             self.active_sinks.append(sink)
 
@@ -706,7 +708,8 @@ class SessionManager(object):
         if rs_fps < 1.0:
             rs_fps = float(args.rs_fps)
         rs_path = os.path.join(cameras_dir, 'realsense_color.mp4')
-        rs_sink = VideoSink(rs_path, rs_fps, max_queue=args.writer_queue)
+        rs_sink = VideoSink(rs_path, rs_fps, max_queue=args.writer_queue,
+                            trial_start_wall=self.trial_start_wall)
         self.rs_thread.set_sink(rs_sink)
         self.active_sinks.append(rs_sink)
 
@@ -714,7 +717,6 @@ class SessionManager(object):
         self.ts_csv_writer = csv.writer(self.ts_csv_file)
         self.ts_csv_writer.writerow(['wall_time', 'trial_time', 'hik0_fps', 'hik1_fps', 'hik2_fps', 'hik3_fps', 'rs_fps'])
 
-        self.trial_start_wall = time.time()
         write_trial_metadata(trial_dir, [
             ('task_name', args.task_name),
             ('trial_id', self.trial_id),
@@ -1088,7 +1090,20 @@ class SessionManager(object):
             choice = 'now' if console.ask_yes_no('online collection finished. run post-processing now?') else 'later'
 
         if choice == 'now':
-            console.section('Post-Processing: Trajectory Analysis')
+            console.rule('Post-Processing: Offline per-trial reconstruction')
+            try:
+                from prism.processing.offline_reconstruct import reconstruct_task
+                reconstruct_task(
+                    self.output_root,
+                    calib_json=os.path.expanduser(self.args.calib_json) if self.args.calib_json else None,
+                    config_path=self.args.config,
+                )
+            except Exception as e:
+                console.warning(f'offline reconstruction failed: {e}')
+                import traceback
+                traceback.print_exc()
+
+            console.rule('Post-Processing: Trajectory Analysis')
             try:
                 from prism.processing.trajectory_analyzer import analyze_task_directory
                 analyze_task_directory(self.output_root)
@@ -1303,7 +1318,7 @@ def main(argv=None):
         session_manager.close()
         return 1
     except Exception as e:
-        console.error('[error] unexpected error during session: %s' % e)
+        console.warning('[error] unexpected error during session: %s' % e)
         console.warning('[error] forcing cleanup...')
         try:
             session_manager.close()

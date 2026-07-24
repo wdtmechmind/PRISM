@@ -166,6 +166,16 @@ cp ~/mvs_charuco_data/charuco_4cam_result.json \
    /mnt/projects-8tb/PRISM/configs/devices/charuco_4cam_result.json
 ```
 
+标定捕获工具支持**实时预览**：默认 `--live y` 会弹出 2x2 四路画面并实时叠加 ChArUco 检测（角点变绿即检测良好），按 `Space`/`Enter` 采集一组同步帧、`q` 结束，便于边看边调标定板位置。
+
+LED 的 HSV 阈值可用**点击式标定工具**交互调好后写入配置：
+
+```bash
+python3 tools/calibrate_hsv_led.py --config configs/collection/default_online.yaml --start-color yellow
+```
+
+工具显示「原图 | 掩膜 | 检测叠加」三画面，**左键点击画面中的 LED** 即可采样该像素并自动扩展该颜色的 HSV 范围，右键撤销；按 `1/2/3/4` 切换颜色，`w` 保存到 `configs/collection/hsv_tuned.yaml`（再把其中 HSV 字段并入 `default_online.yaml` 生效）。工具自带软触发，单相机也能独立取流。
+
 详见 [docs/HARDWARE_TRIGGER_CALIBRATION_GUIDE.md](docs/HARDWARE_TRIGGER_CALIBRATION_GUIDE.md)。
 
 ### GPIO 硬件连接
@@ -215,10 +225,16 @@ data/raw/
         hand_feedback.csv
       logs/
         fps_log.csv
+      trajectory/                     # 离线 per-trial 重建产物（运行后处理后生成，见 §8）
+        trajectory_led.csv            # 每 LED 三角化轨迹（原始 + 平滑列，双时间轴）
+        rigid_pose_6d.csv             # 刚体 6D 位姿（原始 + 平滑列，双时间轴）
+        rigid_6d_frames.png           # 6D 轨迹 3D 图（RGB 机体坐标系）
 ```
 
 说明：
 
+- `cameras/*_timestamps.csv` 每帧记录 `capture_wall_time`（绝对时间）与 `trial_time`（相对该 trial 起点）**双时间轴**。
+- `trial_xxxxxx/trajectory/` 目录由离线 per-trial 重建（后处理或 `prism-reconstruct-trials`）生成，采集当下为空，详见 §8。
 - `hand_sdk_commands_timeline.csv` 记录任务级 open-loop 指令，`t_sec` 与轨迹 CSV 对齐。
 - `trial_xxxxxx/hand/sdk_commands.csv` 与 `trial_xxxxxx/hand/rpi_commands.csv` 记录 trial 期间指令。
 - `hand_feedback.csv` 仍是占位文件（反馈链路未实现）。
@@ -271,18 +287,49 @@ trial_000001/
 
 `alignment_summary.csv` 会记录每路源帧数、输出帧数、实测 fps、平均/最大时间误差。
 
-## 8. 仍未实现的边界
+## 8. 离线 per-trial 三维重建（LED 轨迹 + 6D 姿态 + 平滑）
+
+在线轨迹（`trajectory_led_nearest.csv` 等）是预览循环速率下、带卡尔曼预测填充的实时监控信号；作为评估/训练用的正式数据，推荐用**离线 per-trial 重建**：直接读每个 trial 的 4 路 Hik 视频与 `*_timestamps.csv`，按相机原始帧率逐帧重新检测 LED 并三角化，只保留实测点，可复现、可重调（改 HSV/阈值后重跑，无需重新采集）。
+
+采集结束选择运行后处理（`--post-process now` 或交互时选 `y`）会自动依次执行：**离线 per-trial 重建 → 轨迹分析绘图**。也可对已有数据单独运行：
+
+```bash
+cd /mnt/projects-8tb/PRISM
+pip install -e .   # 首次注册 CLI
+
+prism-reconstruct-trials data/raw/task_YYYYmmdd_HHMMSS_task-name
+```
+
+关键参数：
+
+- `--calib-json`: charuco 标定 JSON；默认从 task/config 元数据自动解析
+- `--config`: 采集配置 YAML，用于取 HSV 阈值（默认取任务记录的 config）
+- `--tol-ms`: 跨相机帧关联的最大时间差（默认 8 ms）
+- `--smooth-window`: 移动平均窗口（帧），抑制抖动；`1` 关闭平滑（默认 5）
+- `--despike-window`: 中值滤波窗口（帧），去单帧离群跳点；`1` 关闭（默认 3）
+- `--smooth-max-gap`: 允许被插值跨越的最大缺帧数，超过则把轨迹切段独立平滑（默认 3）
+
+每个 trial 在 `trial_xxxxxx/trajectory/` 下产出：
+
+- `trajectory_led.csv` — 每 LED 三角化位置，含**原始**列 `x_m,y_m,z_m` 与**平滑**列 `x_smooth_m,...`
+- `rigid_pose_6d.csv` — 刚体 6D 位姿，含原始 `x_m..yaw_deg` 与平滑 `x_smooth_m..yaw_smooth_deg`
+- `rigid_6d_frames.png` — 6D 轨迹 3D 图：位置路径 + 沿途机体坐标系 RGB 三轴（X=红/Y=绿/Z=蓝）
+
+平滑说明：位置用「去毛刺（中值）+ 短缺口线性插值 + 移动平均」；姿态用**四元数滑动平均**（符号对齐避免双重覆盖，按缺口切段），再转回 roll/pitch/yaw。精度报告基于**原始**测量值，不被平滑美化。
+
+双时间轴：所有 per-trial CSV 同时带 `capture_wall_time`（绝对，跨模态对齐用）与 `t_trial`（该 trial 起点为 0，与该 trial 视频第 0 帧对齐）。
+
+## 9. 仍未实现的边界
 
 以下部分还不是完整功能：
 
 - RPi 串口命令读取
 - 灵巧手 SDK 命令转发
 - Gen2/Gen3 hand feedback 实时记录
-- 在线结束后的自动后处理入口
 
 **硬件触发同步已实现**。Master 相机 (DA8165486) 输出 GPIO Line1 脉冲，Slave 相机在 GPIO Line0 接收触发。相机内参标定（ChArUco）需要进行一次性标定（首次设置或更换相机时）。完成标定后 `prism-collect` 会自动识别和配置 Master/Slave，后续采集无需手动干预。详见 [docs/HARDWARE_TRIGGER_CALIBRATION_GUIDE.md](docs/HARDWARE_TRIGGER_CALIBRATION_GUIDE.md)。
 
-## 9. 手姿态 CLI 控制（RPi 就绪前）
+## 10. 手姿态 CLI 控制（RPi 就绪前）
 
 在 RPi 串口桥接完成前，可以直接通过 TCP socket 控制机械手预设姿态。推荐直接在在线采集 CLI 内控制（同一个窗口同时控制采集和手势）。
 
@@ -326,7 +373,7 @@ prism-hand --ip 127.0.0.1 --port 60686 --pose five_grasp
 prism-hand --ip 127.0.0.1 --port 60686 --raw-cmd '@ROG<6>&'
 ```
 
-## 10. 轨迹分析与诊断
+## 11. 轨迹分析与诊断
 
 采集完成后，可以用轨迹分析工具生成可视化，对比在线采集和离线重建的轨迹，诊断采集时帧率下降是否由于写队列溢出或 CPU 瓶颈引起。
 
@@ -396,6 +443,6 @@ prism-analyze-trajectory data/raw/task_20260723_120000_grasp-demo
 
 对比结果会显示在线采集和离线重建的 3D 轨迹差异，帮助判断采集质量。
 
-## 11. 开发与验证
+## 12. 开发与验证
 
 常用无硬件验证：

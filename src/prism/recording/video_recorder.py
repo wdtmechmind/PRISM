@@ -32,7 +32,8 @@ def make_ffmpeg_safe_fps(fps, default=30.0):
 
 
 class VideoSink(object):
-    def __init__(self, path, fps, max_queue=256, brightness_alpha=1.0, brightness_beta=0.0):
+    def __init__(self, path, fps, max_queue=256, brightness_alpha=1.0, brightness_beta=0.0,
+                 trial_start_wall=None):
         self.path = path
         self.fps = make_ffmpeg_safe_fps(fps, default=30.0)
         self.q = queue.Queue(maxsize=int(max_queue))
@@ -44,11 +45,13 @@ class VideoSink(object):
         self.written = 0
         self.brightness_alpha = float(brightness_alpha)
         self.brightness_beta = float(brightness_beta)
+        # Reference wall time for the trial-relative time axis; None -> column left blank.
+        self.trial_start_wall = float(trial_start_wall) if trial_start_wall is not None else None
 
         ts_path = os.path.splitext(path)[0] + '_timestamps.csv'
         self.ts_file = open(ts_path, 'w', newline='', encoding='utf-8')
         self.ts_writer = csv.writer(self.ts_file)
-        self.ts_writer.writerow(['frame_index', 'capture_wall_time', 'device_frame_num'])
+        self.ts_writer.writerow(['frame_index', 'capture_wall_time', 'trial_time', 'device_frame_num'])
 
         self.thread.start()
 
@@ -80,7 +83,11 @@ class VideoSink(object):
             try:
                 self._ensure_writer(frame)
                 self.writer.write(frame)
-                self.ts_writer.writerow([self.written, '%.6f' % capture_time, device_frame_num])
+                if self.trial_start_wall is not None:
+                    trial_time = '%.6f' % (capture_time - self.trial_start_wall)
+                else:
+                    trial_time = ''
+                self.ts_writer.writerow([self.written, '%.6f' % capture_time, trial_time, device_frame_num])
                 self.written += 1
             except Exception as e:
                 self.writer_failed = True

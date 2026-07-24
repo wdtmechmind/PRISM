@@ -333,6 +333,130 @@ def print_trajectory_stats(stats, title='Trajectory Statistics'):
         console.info(f'  Z range: {s["spatial_range"]["z"][0]:.4f} ~ {s["spatial_range"]["z"][1]:.4f} m')
 
 
+def _rotation_zyx(roll_deg, pitch_deg, yaw_deg):
+    """Rebuild a rotation matrix from ZYX (roll/pitch/yaw) Euler angles in degrees.
+
+    Inverse of realtime_reconstruction.matrix_to_rpy_zyx: R = Rz(yaw)Ry(pitch)Rx(roll).
+    Columns of R are the body X, Y, Z axes expressed in the world frame.
+    """
+    r, p, y = np.radians([roll_deg, pitch_deg, yaw_deg])
+    cr, sr = np.cos(r), np.sin(r)
+    cp, sp = np.cos(p), np.sin(p)
+    cy, sy = np.cos(y), np.sin(y)
+    rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    return rz @ ry @ rx
+
+
+def _load_rigid_6d(rigid_csv, prefer_smoothed=True):
+    """Load rigid 6D poses, preferring smoothed columns when present.
+
+    Returns dict {xyz (N,3), rpy (N,3), smoothed: bool} or None.
+    """
+    sm_cols = ['x_smooth_m', 'y_smooth_m', 'z_smooth_m',
+               'roll_smooth_deg', 'pitch_smooth_deg', 'yaw_smooth_deg']
+    raw_cols = ['x_m', 'y_m', 'z_m', 'roll_deg', 'pitch_deg', 'yaw_deg']
+    rows = []
+    with open(rigid_csv, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        cols = reader.fieldnames or []
+        use_sm = prefer_smoothed and all(c in cols for c in sm_cols)
+        pick = sm_cols if use_sm else raw_cols
+        if not all(c in cols for c in pick):
+            return None
+        for row in reader:
+            if row.get('mode', 'measured').strip() not in ('', 'measured'):
+                continue
+            try:
+                vals = [float(row[c]) for c in pick]
+            except (ValueError, KeyError, TypeError):
+                continue
+            rows.append(vals)
+    if not rows:
+        return None
+    arr = np.asarray(rows, dtype=np.float64)
+    return {'xyz': arr[:, 0:3], 'rpy': arr[:, 3:6], 'smoothed': use_sm}
+
+
+def plot_rigid_6d_frames(rigid_csv, output_path=None, max_frames=60, axis_len=None,
+                         title='6D Trajectory (body frames: X=red, Y=green, Z=blue)'):
+    """Plot the rigid-body 6D trajectory as a 3D path with RGB body frames along it.
+
+    Reads an offline ``rigid_pose_6d.csv`` (position + roll/pitch/yaw), preferring
+    the smoothed columns when available, draws the position path, and at sampled
+    poses draws the body coordinate axes as red/green/blue arrows so orientation
+    over time is visible.
+    """
+    data = _load_rigid_6d(rigid_csv, prefer_smoothed=True)
+    if data is None or len(data['xyz']) == 0:
+        console.warning(f'no rigid 6D data to plot in: {rigid_csv}')
+        return None
+
+    xyz = np.asarray(data['xyz'], dtype=np.float64)
+    rpy = np.asarray(data['rpy'], dtype=np.float64)
+    n = len(xyz)
+
+    mins = xyz.min(axis=0)
+    maxs = xyz.max(axis=0)
+    span = maxs - mins
+    diag = float(np.linalg.norm(span))
+    if diag < 1e-9:
+        diag = 1.0
+    if axis_len is None:
+        axis_len = 0.06 * diag
+
+    stride = max(1, n // max(1, max_frames))
+
+    fig = plt.figure(figsize=(12, 9))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Position path.
+    ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color='0.6', linewidth=1.2, alpha=0.8, zorder=1)
+
+    # Body frames as RGB axes at sampled poses.
+    axis_colors = ['red', 'green', 'blue']
+    for i in range(0, n, stride):
+        origin = xyz[i]
+        rot = _rotation_zyx(rpy[i, 0], rpy[i, 1], rpy[i, 2])
+        for a in range(3):
+            d = rot[:, a] * axis_len
+            ax.quiver(origin[0], origin[1], origin[2], d[0], d[1], d[2],
+                      color=axis_colors[a], linewidth=1.6, arrow_length_ratio=0.25, zorder=5)
+
+    ax.scatter(xyz[0, 0], xyz[0, 1], xyz[0, 2], color='black', marker='o', s=70,
+               edgecolor='white', linewidth=1.5, zorder=10, label='start')
+    ax.scatter(xyz[-1, 0], xyz[-1, 1], xyz[-1, 2], color='black', marker='X', s=90,
+               edgecolor='white', linewidth=1.5, zorder=10, label='end')
+
+    ax.set_xlabel('X (m)', fontsize=12)
+    ax.set_ylabel('Y (m)', fontsize=12)
+    ax.set_zlabel('Z (m)', fontsize=12)
+    ax.set_title('%s\n%d poses, showing every %d (%s)'
+                 % (title, n, stride, 'smoothed' if data.get('smoothed') else 'raw'),
+                 fontsize=13, fontweight='bold')
+
+    try:
+        ax.set_box_aspect(tuple(np.maximum(span, 1e-6)))
+    except Exception:
+        pass
+
+    handles = [
+        mpatches.Patch(color='red', label='body X'),
+        mpatches.Patch(color='green', label='body Y'),
+        mpatches.Patch(color='blue', label='body Z'),
+    ]
+    ax.legend(handles=handles, loc='upper left', fontsize=10)
+    ax.view_init(elev=20, azim=-60)
+
+    plt.tight_layout()
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        console.success(f'saved 6D trajectory plot: {output_path}')
+    plt.close(fig)
+    return output_path
+
+
 def analyze_task_directory(task_dir, output_dir=None):
     """Analyze a complete task directory with online and offline trajectories."""
     if output_dir is None:
