@@ -443,6 +443,49 @@ prism-analyze-trajectory data/raw/task_20260723_120000_grasp-demo
 
 对比结果会显示在线采集和离线重建的 3D 轨迹差异，帮助判断采集质量。
 
-## 12. 开发与验证
+## 12. Isaac Sim 回放（仿真 replay）
+
+采集数据可以在 **Isaac Sim 5.0** 里做运动学回放，用于检查采集质量、可视化抓取过程。当前是**占位方案**：用一个半透明手掌方块 + RGB 机体坐标轴三元组代表灵巧手，按 `rigid_pose_6d.csv` 的基座 6D 轨迹运动；LED 轨迹画成彩色折线；手势指令按时间线打 log。等有了灵巧手 URDF/USD 和 `gesture_id→关节角` 映射，替换占位体并加关节驱动即可还原手指动作。
+
+脚本：[tools/isaacsim_replay.py](tools/isaacsim_replay.py)。用 Isaac Sim 自带 Python 运行（**不要用项目 conda 环境**）：
+
+```bash
+conda deactivate   # 避免 conda 环境警告
+
+/isaac-sim/python.sh tools/isaacsim_replay.py \
+  --trial-dir data/raw/task_YYYYmmdd_HHMMSS_task-name/trial_000001 \
+  --fps 60
+```
+
+也可以直接指定 CSV：
+
+```bash
+/isaac-sim/python.sh tools/isaacsim_replay.py \
+  --rigid data/raw/.../trial_000001/trajectory/rigid_pose_6d.csv \
+  --led   data/raw/.../trial_000001/trajectory/trajectory_led.csv \
+  --gestures data/raw/.../trial_000001/hand/sdk_commands.csv \
+  --speed 0.5 --loop
+```
+
+关键参数：
+
+- `--trial-dir`: trial 目录，自动补全 `trajectory/` 与 `hand/` 下的默认 CSV 路径
+- `--rigid` / `--led` / `--gestures`: 分别显式指定刚体位姿、LED 轨迹、手势 CSV
+- `--speed`: 回放速度倍率（默认 1.0）
+- `--fps`: 渲染帧率上限（默认 60，避免忙等打满 CPU；`0` 为不限制）
+- `--loop`: 循环回放
+- `--headless`: 无窗口（最省，仅验证数据/打 log）
+- `--no-leds`: 不画 LED 折线
+- `--no-smoothed`: 用原始未平滑位姿列（默认优先用 `*_smooth_*` 列）
+
+姿态约定：`rigid_pose_6d.csv` 的 RPY 为 **ZYX** 欧拉角（`R = Rz(yaw)·Ry(pitch)·Rx(roll)`，R 列为机体轴在世界系方向），世界系为 charuco 标定系、已 Z-up，与 Isaac Sim 一致，无需额外轴转换。
+
+性能提示：
+
+- Isaac Sim 调度是 CPU 密集的。若卡顿，先把 CPU 调度器切到 performance：
+  `sudo cpupower frequency-set -g performance`（重启后还原为 powersave 属正常）。
+- 首次运行 `app ready` 后会卡数十秒编译 RTX shader / Warp kernel 缓存，是一次性的，第二次跑同一场景会明显变快。
+
+## 13. 开发与验证
 
 常用无硬件验证：
