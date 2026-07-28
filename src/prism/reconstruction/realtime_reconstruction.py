@@ -3,6 +3,11 @@ import numpy as np
 
 from prism.common.timebase import pick_bracket, pick_nearest
 
+try:
+    from ultralytics import YOLO
+except Exception:  # pragma: no cover - optional YOLO backend
+    YOLO = None
+
 
 COLOR_ORDER = ['red', 'yellow', 'blue', 'green']
 COLOR_BRG = {
@@ -17,6 +22,8 @@ COLOR_MPL = {
     'blue': 'tab:blue',
     'green': 'tab:green',
 }
+
+DETECTOR_BACKENDS = ['hsv', 'yolo', 'hybrid']
 
 
 def normalize_vec(vec):
@@ -173,6 +180,122 @@ def detect_led_hsv(img_bgr, hsv_low, hsv_high, min_area):
     return (cx, cy), best_area
 
 
+def _label_to_color(label):
+    text = str(label).strip().lower()
+    for name in COLOR_ORDER:
+        if text == name or name in text:
+            return name
+    return None
+
+
+class LedDetector(object):
+    def __init__(self, hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.25,
+                 yolo_iou=0.45, yolo_imgsz=640):
+        self.hsv_cfg = hsv_cfg
+        self.min_area = float(min_area)
+        self.backend = (backend or 'hsv').strip().lower()
+        if self.backend not in DETECTOR_BACKENDS:
+            raise ValueError('unknown detector backend: %s' % backend)
+
+        self.yolo = None
+        self.yolo_conf = float(yolo_conf)
+        self.yolo_iou = float(yolo_iou)
+        self.yolo_imgsz = int(yolo_imgsz)
+        self.yolo_names = None
+
+        if self.backend in ('yolo', 'hybrid'):
+            if YOLO is None:
+                raise RuntimeError(
+                    'YOLO backend requested but ultralytics is not installed. '
+                    'Install ultralytics and provide --yolo-weights.'
+                )
+            if not yolo_weights:
+                raise RuntimeError('YOLO backend requested but --yolo-weights is empty')
+            self.yolo = YOLO(yolo_weights)
+            self.yolo_names = getattr(self.yolo, 'names', None)
+
+    def _detect_hsv(self, frame):
+        res = {}
+        for name in COLOR_ORDER:
+            low, high = self.hsv_cfg[name]
+            pt, _ = detect_led_hsv(frame, low, high, self.min_area)
+            res[name] = pt
+        return res
+
+    def _detect_yolo(self, frame):
+        res = {name: None for name in COLOR_ORDER}
+        if self.yolo is None:
+            return res
+
+        outputs = self.yolo.predict(
+            source=frame,
+            conf=self.yolo_conf,
+            iou=self.yolo_iou,
+            imgsz=self.yolo_imgsz,
+            verbose=False,
+        )
+        if not outputs:
+            return res
+
+        result = outputs[0]
+        boxes = getattr(result, 'boxes', None)
+        if boxes is None:
+            return res
+
+        xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else np.asarray(boxes.xyxy)
+        cls = boxes.cls.cpu().numpy().astype(np.int64) if hasattr(boxes.cls, 'cpu') else np.asarray(boxes.cls, dtype=np.int64)
+        conf = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else np.asarray(boxes.conf)
+
+        best = {name: (None, -1.0) for name in COLOR_ORDER}
+        names = getattr(result, 'names', None) or self.yolo_names or {}
+        for box, cls_idx, score in zip(xyxy, cls, conf):
+            if isinstance(names, dict):
+                label = names.get(int(cls_idx), str(int(cls_idx)))
+            else:
+                idx = int(cls_idx)
+                label = names[idx] if idx < len(names) else str(idx)
+            color = _label_to_color(label)
+            if color is None:
+                continue
+            if float(score) <= best[color][1]:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in box]
+            best[color] = (((x1 + x2) * 0.5, (y1 + y2) * 0.5), float(score))
+
+        for name in COLOR_ORDER:
+            if best[name][0] is not None:
+                res[name] = best[name][0]
+        return res
+
+    def detect_all(self, frame):
+        hsv_det = self._detect_hsv(frame)
+        if self.backend == 'hsv':
+            return hsv_det
+
+        yolo_det = self._detect_yolo(frame)
+        if self.backend == 'yolo':
+            return yolo_det
+
+        merged = dict(hsv_det)
+        for name in COLOR_ORDER:
+            if yolo_det[name] is not None:
+                merged[name] = yolo_det[name]
+        return merged
+
+
+def build_led_detector(hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.25,
+                       yolo_iou=0.45, yolo_imgsz=640):
+    return LedDetector(
+        hsv_cfg=hsv_cfg,
+        min_area=min_area,
+        backend=backend,
+        yolo_weights=yolo_weights,
+        yolo_conf=yolo_conf,
+        yolo_iou=yolo_iou,
+        yolo_imgsz=yolo_imgsz,
+    )
+
+
 def create_kalman():
     kf = cv2.KalmanFilter(6, 3)
     kf.transitionMatrix = np.eye(6, dtype=np.float32)
@@ -269,16 +392,12 @@ def robust_triangulate(observations, cameras, max_norm_reproj_error):
     return best
 
 
-def detect_all_colors(frame, hsv_cfg, min_area, cache):
+def detect_all_colors(frame, detector, cache):
     key = id(frame)
     if key in cache:
         return cache[key]
 
-    res = {}
-    for name in COLOR_ORDER:
-        low, high = hsv_cfg[name]
-        pt, _ = detect_led_hsv(frame, low, high, min_area)
-        res[name] = pt
+    res = detector.detect_all(frame)
     cache[key] = res
     return res
 
@@ -378,7 +497,7 @@ def advance_tracking(st, observations_by_color, cameras, args, dt, now, t0, writ
     return point_by_color, mode_by_color
 
 
-def build_observations_nearest(buffers, t_ref, hsv_cfg, min_area, det_cache):
+def build_observations_nearest(buffers, t_ref, detector, det_cache):
     obs = {name: {} for name in COLOR_ORDER}
     for cam_i in range(4):
         buf = buffers[cam_i]
@@ -387,14 +506,14 @@ def build_observations_nearest(buffers, t_ref, hsv_cfg, min_area, det_cache):
         sel = pick_nearest(buf, t_ref)
         if sel is None:
             continue
-        det = detect_all_colors(sel[1], hsv_cfg, min_area, det_cache)
+        det = detect_all_colors(sel[1], detector, det_cache)
         for name in COLOR_ORDER:
             if det[name] is not None:
                 obs[name][cam_i] = det[name]
     return obs
 
 
-def build_observations_interp(buffers, t_ref, hsv_cfg, min_area, det_cache):
+def build_observations_interp(buffers, t_ref, detector, det_cache):
     obs = {name: {} for name in COLOR_ORDER}
     for cam_i in range(4):
         buf = buffers[cam_i]
@@ -402,8 +521,8 @@ def build_observations_interp(buffers, t_ref, hsv_cfg, min_area, det_cache):
             continue
         before, after = pick_bracket(buf, t_ref)
         if before is not None and after is not None and after[0] > before[0]:
-            det_b = detect_all_colors(before[1], hsv_cfg, min_area, det_cache)
-            det_a = detect_all_colors(after[1], hsv_cfg, min_area, det_cache)
+            det_b = detect_all_colors(before[1], detector, det_cache)
+            det_a = detect_all_colors(after[1], detector, det_cache)
             w = (t_ref - before[0]) / (after[0] - before[0])
             for name in COLOR_ORDER:
                 pb = det_b[name]
@@ -418,7 +537,7 @@ def build_observations_interp(buffers, t_ref, hsv_cfg, min_area, det_cache):
             one = before if before is not None else after
             if one is None:
                 continue
-            det = detect_all_colors(one[1], hsv_cfg, min_area, det_cache)
+            det = detect_all_colors(one[1], detector, det_cache)
             for name in COLOR_ORDER:
                 if det[name] is not None:
                     obs[name][cam_i] = det[name]

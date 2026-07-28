@@ -24,12 +24,12 @@ hand_auto_connect: 'n'
 calib_json: /mnt/projects-8tb/PRISM/configs/devices/charuco_4cam_result.json
 
 hik_exposure_us: 3000.0
-hik_gain: 0.0
+hik_gain: 12.0
 hik_frame_rate: 300.0
 rec_brightness_alpha: 2.0
 rec_brightness_beta: 20.0
 strict_param_check: 'y'
-param_tolerance: 0.001
+param_tolerance: 0.05
 writer_queue: 512
 
 rs_serial: ''
@@ -83,6 +83,11 @@ g_v_high: 255
 
 min_area: 10.0
 max_norm_reproj_error: 0.015
+detector_backend: hsv
+yolo_weights: ''
+yolo_conf: 0.25
+yolo_iou: 0.45
+yolo_imgsz: 640
 max_traj_points: 5000
 max_predict_frames: 6
 viz_3d: 'y'

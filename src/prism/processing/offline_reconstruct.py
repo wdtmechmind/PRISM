@@ -34,6 +34,7 @@ from prism.reconstruction.calibration import load_calibration
 from prism.reconstruction.realtime_reconstruction import (
     COLOR_ORDER,
     build_body_model,
+    build_led_detector,
     detect_all_colors,
     estimate_pose_from_model,
     matrix_to_rpy_zyx,
@@ -57,6 +58,14 @@ HSV_DEFAULTS = {
     'g_h_low': 40, 'g_s_low': 60, 'g_v_low': 60, 'g_h_high': 95, 'g_s_high': 255, 'g_v_high': 255,
     'min_area': 10.0,
     'max_norm_reproj_error': 0.015,
+}
+
+DETECTION_DEFAULTS = {
+    'detector_backend': 'hsv',
+    'yolo_weights': '',
+    'yolo_conf': 0.25,
+    'yolo_iou': 0.45,
+    'yolo_imgsz': 640,
 }
 
 
@@ -259,6 +268,18 @@ def resolve_hsv_config(*config_paths):
     return cfg
 
 
+def resolve_detection_config(*config_paths):
+    cfg = dict(DETECTION_DEFAULTS)
+    for path in config_paths:
+        if not path or not os.path.exists(os.path.expanduser(path)):
+            continue
+        data = load_yaml_config(path)
+        for key in DETECTION_DEFAULTS:
+            if key in data:
+                cfg[key] = data[key]
+    return cfg
+
+
 def build_hsv_cfg(cfg):
     out = {}
     for color, pfx in COLOR_TO_PREFIX.items():
@@ -313,7 +334,7 @@ def _visible_str(cam_indices):
     return ','.join('cam%d' % i for i in sorted(cam_indices))
 
 
-def reconstruct_trial(trial_dir, cameras, hsv_cfg, min_area, max_reproj, tol_s,
+def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
                       smooth_window=5, smooth_max_gap=3, despike_window=3):
     """Reconstruct one trial; write trajectory + rigid pose CSVs. Returns paths."""
     cameras_dir = os.path.join(trial_dir, 'cameras')
@@ -361,7 +382,7 @@ def reconstruct_trial(trial_dir, cameras, hsv_cfg, min_area, max_reproj, tol_s,
         n_frames += 1
 
         obs = {name: {} for name in COLOR_ORDER}
-        det_ref = detect_all_colors(cur[ref_i], hsv_cfg, min_area, {})
+        det_ref = detect_all_colors(cur[ref_i], detector, {})
         for name in COLOR_ORDER:
             if det_ref[name] is not None:
                 obs[name][ref_i] = det_ref[name]
@@ -379,7 +400,7 @@ def reconstruct_trial(trial_dir, cameras, hsv_cfg, min_area, max_reproj, tol_s,
                 cur[i] = frame
                 idx[i] += 1
             if cur[i] is not None and abs(float(ts_i[idx[i]]) - t_ref) <= tol_s:
-                det_i = detect_all_colors(cur[i], hsv_cfg, min_area, {})
+                det_i = detect_all_colors(cur[i], detector, {})
                 for name in COLOR_ORDER:
                     if det_i[name] is not None:
                         obs[name][i] = det_i[name]
@@ -507,7 +528,9 @@ def _resolve_calib_json(task_dir, calib_json, config_path):
     raise RuntimeError('could not resolve calibration json; pass --calib-json explicitly')
 
 
-def reconstruct_task(task_dir, calib_json=None, config_path=None, tol_ms=8.0,
+def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backend=None,
+                     yolo_weights=None, yolo_conf=None, yolo_iou=None, yolo_imgsz=None,
+                     tol_ms=8.0,
                      smooth_window=5, smooth_max_gap=3, despike_window=3):
     """Reconstruct every trial under a task directory."""
     task_dir = os.path.abspath(os.path.expanduser(task_dir))
@@ -519,10 +542,44 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, tol_ms=8.0,
 
     task_meta = read_kv_metadata(os.path.join(task_dir, 'task_metadata.yaml'))
     cfg = resolve_hsv_config(task_meta.get('config'), config_path)
+    det_cfg = resolve_detection_config(task_meta.get('config'), config_path)
+
+    meta_det = task_meta.get('tracking_detector')
+    if isinstance(meta_det, dict):
+        if meta_det.get('backend'):
+            det_cfg['detector_backend'] = meta_det.get('backend')
+        if meta_det.get('yolo_weights') is not None:
+            det_cfg['yolo_weights'] = meta_det.get('yolo_weights')
+        if meta_det.get('yolo_conf') is not None:
+            det_cfg['yolo_conf'] = meta_det.get('yolo_conf')
+        if meta_det.get('yolo_iou') is not None:
+            det_cfg['yolo_iou'] = meta_det.get('yolo_iou')
+        if meta_det.get('yolo_imgsz') is not None:
+            det_cfg['yolo_imgsz'] = meta_det.get('yolo_imgsz')
+
+    if detector_backend is not None:
+        det_cfg['detector_backend'] = detector_backend
+    if yolo_weights is not None:
+        det_cfg['yolo_weights'] = yolo_weights
+    if yolo_conf is not None:
+        det_cfg['yolo_conf'] = yolo_conf
+    if yolo_iou is not None:
+        det_cfg['yolo_iou'] = yolo_iou
+    if yolo_imgsz is not None:
+        det_cfg['yolo_imgsz'] = yolo_imgsz
     hsv_cfg = build_hsv_cfg(cfg)
     min_area = float(cfg['min_area'])
     max_reproj = float(cfg['max_norm_reproj_error'])
     tol_s = max(0.0, float(tol_ms) / 1000.0)
+    detector = build_led_detector(
+        hsv_cfg,
+        min_area,
+        backend=det_cfg['detector_backend'],
+        yolo_weights=det_cfg['yolo_weights'],
+        yolo_conf=det_cfg['yolo_conf'],
+        yolo_iou=det_cfg['yolo_iou'],
+        yolo_imgsz=det_cfg['yolo_imgsz'],
+    )
 
     trial_dirs = sorted(
         os.path.join(task_dir, name) for name in os.listdir(task_dir)
@@ -534,12 +591,12 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, tol_ms=8.0,
 
     console.rule('Offline per-trial reconstruction')
     console.info('calibration: %s' % calib_path)
-    console.info('trials: %d | reproj<=%.4f | assoc tol=%.1f ms | smooth win=%d despike=%d gap<=%d'
-                 % (len(trial_dirs), max_reproj, tol_ms, smooth_window, despike_window, smooth_max_gap))
+    console.info('trials: %d | backend=%s | reproj<=%.4f | assoc tol=%.1f ms | smooth win=%d despike=%d gap<=%d'
+                 % (len(trial_dirs), det_cfg['detector_backend'], max_reproj, tol_ms, smooth_window, despike_window, smooth_max_gap))
 
     for trial_dir in trial_dirs:
         traj_path, rigid_path = reconstruct_trial(
-            trial_dir, cameras, hsv_cfg, min_area, max_reproj, tol_s,
+            trial_dir, cameras, detector, max_reproj, tol_s,
             smooth_window=smooth_window, smooth_max_gap=smooth_max_gap, despike_window=despike_window)
         if traj_path and print_accuracy_report is not None:
             try:
@@ -563,6 +620,16 @@ def main(argv=None):
                         help='charuco calibration json; default reads it from task/config metadata')
     parser.add_argument('--config', type=str, default=None,
                         help='collection config yaml to source HSV thresholds from')
+    parser.add_argument('--detector-backend', type=str, default=None, choices=['hsv', 'yolo', 'hybrid'],
+                        help='override detector backend; default comes from config or hsv')
+    parser.add_argument('--yolo-weights', type=str, default=None,
+                        help='override YOLO weights path; default comes from config')
+    parser.add_argument('--yolo-conf', type=float, default=None,
+                        help='override YOLO confidence threshold')
+    parser.add_argument('--yolo-iou', type=float, default=None,
+                        help='override YOLO NMS IoU threshold')
+    parser.add_argument('--yolo-imgsz', type=int, default=None,
+                        help='override YOLO inference image size')
     parser.add_argument('--tol-ms', type=float, default=8.0,
                         help='max wall-time gap to associate frames across cameras')
     parser.add_argument('--smooth-window', type=int, default=5,
@@ -574,7 +641,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     reconstruct_task(args.task_dir, calib_json=args.calib_json,
-                     config_path=args.config, tol_ms=args.tol_ms,
+                     config_path=args.config, detector_backend=args.detector_backend,
+                     yolo_weights=args.yolo_weights, yolo_conf=args.yolo_conf,
+                     yolo_iou=args.yolo_iou, yolo_imgsz=args.yolo_imgsz,
+                     tol_ms=args.tol_ms,
                      smooth_window=args.smooth_window, smooth_max_gap=args.smooth_max_gap,
                      despike_window=args.despike_window)
 

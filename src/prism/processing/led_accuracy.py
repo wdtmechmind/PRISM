@@ -359,9 +359,12 @@ def _header(title, width=72):
 
 def print_accuracy_report(traj_path, rigid_path=None,
                           static_t0=None, static_t1=None,
-                          static_min_frames=20, static_max_range_mm=3.0):
+                          static_min_frames=20, static_max_range_mm=3.0,
+                          md_path=None):
     """
     Load CSVs, compute all metrics, print a formatted report.
+
+    If ``md_path`` is given, the same report is also written as a Markdown file.
 
     Returns a dict with all computed values (suitable for JSON serialisation).
     """
@@ -517,7 +520,7 @@ def print_accuracy_report(traj_path, rigid_path=None,
     print(_sep())
     print()
 
-    return {
+    result = {
         'traj_csv': traj_path,
         'rigid_csv': rigid_path,
         'static_window': {'t0': sw_t0, 't1': sw_t1, 'source': sw_src},
@@ -529,3 +532,149 @@ def print_accuracy_report(traj_path, rigid_path=None,
         'pose_noise': static_pose_noise(rigid, sw_t0, sw_t1),
         'frame_consistency': fc,
     }
+
+    if md_path:
+        try:
+            with open(md_path, 'w', encoding='utf-8') as f:
+                f.write(format_accuracy_markdown(result))
+            console.saved('精度报告 (markdown): %s' % md_path)
+        except OSError as exc:
+            console.warning('写入 markdown 失败 %s: %s' % (md_path, exc))
+
+    return result
+
+
+def _fmt(value, spec='.3f', na='n/a'):
+    """Format a possibly-None number."""
+    if value is None:
+        return na
+    return format(value, spec)
+
+
+def format_accuracy_markdown(result):
+    """Render the accuracy ``result`` dict (from ``print_accuracy_report``) as Markdown."""
+    if not result:
+        return '# LED 定位精度评估报告\n\n无有效 measured 数据，跳过。\n'
+
+    lines = []
+    lines.append('# PRISM LED 定位精度评估报告')
+    lines.append('')
+    lines.append('| 项目 | 值 |')
+    lines.append('| --- | --- |')
+    lines.append('| 轨迹文件 | `%s` |' % os.path.basename(result.get('traj_csv') or ''))
+    if result.get('rigid_csv'):
+        lines.append('| 姿态文件 | `%s` |' % os.path.basename(result['rigid_csv']))
+    sw = result.get('static_window') or {}
+    lines.append('| 静止段 | %s |' % (sw.get('source') or 'n/a'))
+    lines.append('| 总时间帧数 | %s |' % result.get('total_frames', 'n/a'))
+    lines.append('')
+
+    # 1. Tracking coverage
+    lines.append('## 1. 追踪覆盖率')
+    lines.append('')
+    cov = result.get('tracking_coverage') or {}
+    if cov:
+        lines.append('| LED | 追踪帧数 | 覆盖率 |')
+        lines.append('| --- | ---: | ---: |')
+        for color in COLORS:
+            if color in cov:
+                c = cov[color]
+                lines.append('| %s | %d | %.1f%% |'
+                             % (color, c['tracked_frames'], c['coverage_pct']))
+    else:
+        lines.append('_无数据_')
+    lines.append('')
+
+    # 2. Reprojection error
+    lines.append('## 2. 重投影误差 (归一化像素坐标)')
+    lines.append('')
+    re = result.get('reprojection_error')
+    if re:
+        lines.append('| 样本数 | 均值 | 中位数 | P95 | 最大值 |')
+        lines.append('| ---: | ---: | ---: | ---: | ---: |')
+        lines.append('| %d | %.6f | %.6f | %.6f | %.6f |'
+                     % (re['n'], re['mean'], re['median'], re['p95'], re['max']))
+    else:
+        lines.append('_无有效重投影误差数据_')
+    lines.append('')
+
+    # 3. Rigid distance consistency
+    lines.append('## 3. 刚体 LED 间距一致性（定位精度代理指标）')
+    lines.append('')
+    rdc = result.get('rigid_distance_consistency')
+    if rdc:
+        lines.append('| LED 对 | 样本数 | 均值/mm | 标准差/mm | P95偏差/mm | 极差/mm |')
+        lines.append('| --- | ---: | ---: | ---: | ---: | ---: |')
+        for r in rdc:
+            lines.append('| %s | %d | %.2f | %.3f | %.3f | %.3f |'
+                         % (r['pair'], r['n'], r['mean_mm'], r['std_mm'],
+                            r['p95_dev_mm'], r['range_mm']))
+        stds = [r['std_mm'] for r in rdc]
+        mean_std = float(np.mean(stds))
+        sigma_led = mean_std / math.sqrt(2)
+        lines.append('')
+        lines.append('- 平均间距标准差: **%.3f mm**' % mean_std)
+        lines.append('- 推算单 LED 噪声: **σ ≈ %.3f mm** (假设各 LED 噪声独立同分布)' % sigma_led)
+    else:
+        lines.append('_LED 对数不足（需至少两个 LED 同时追踪）_')
+    lines.append('')
+
+    # 4. Static position noise
+    lines.append('## 4. 静止段 LED 位置噪声')
+    lines.append('')
+    lines.append('静止段: %s' % (sw.get('source') or 'n/a'))
+    lines.append('')
+    noise = result.get('static_position_noise_mm')
+    if noise:
+        lines.append('| LED | 帧数 | σ_X/mm | σ_Y/mm | σ_Z/mm | 3D-RMS/mm |')
+        lines.append('| --- | ---: | ---: | ---: | ---: | ---: |')
+        for color in COLORS:
+            if color in noise:
+                n = noise[color]
+                lines.append('| %s | %d | %.3f | %.3f | %.3f | %.3f |'
+                             % (color, n['n'], n['std_x_mm'], n['std_y_mm'],
+                                n['std_z_mm'], n['rms_3d_mm']))
+    else:
+        lines.append('_未找到合适的静止段或有效帧不足_')
+    lines.append('')
+
+    # 5. 6DOF pose noise
+    lines.append('## 5. 刚体 6DOF 姿态噪声')
+    lines.append('')
+    pn = result.get('pose_noise')
+    if pn:
+        lines.append('| 量 | 值 |')
+        lines.append('| --- | ---: |')
+        lines.append('| σ_X | %.3f mm |' % pn['std_x_mm'])
+        lines.append('| σ_Y | %.3f mm |' % pn['std_y_mm'])
+        lines.append('| σ_Z | %.3f mm |' % pn['std_z_mm'])
+        lines.append('| 平移 3D-RMS | **%.3f mm** |' % pn['rms_trans_mm'])
+        lines.append('| σ_roll | %.4f° |' % pn['std_roll_deg'])
+        lines.append('| σ_pitch | %.4f° |' % pn['std_pitch_deg'])
+        lines.append('| σ_yaw | %.4f° |' % pn['std_yaw_deg'])
+        lines.append('| 姿态 3D-RMS | **%.4f°** |' % pn['rms_rot_deg'])
+    else:
+        lines.append('_未提供 rigid_pose_6d.csv 或数据不足_')
+    lines.append('')
+
+    # 6. Frame consistency
+    lines.append('## 6. 帧间一致性 / 运动抖动（全程，含运动段）')
+    lines.append('')
+    fc = result.get('frame_consistency')
+    if fc:
+        lines.append('| LED | 帧数 | 中位步长/mm | 最大步长/mm | 抖动RMS/mm | 抖动P95/mm | 加速度RMS/mm |')
+        lines.append('| --- | ---: | ---: | ---: | ---: | ---: | ---: |')
+        for color in COLORS:
+            if color in fc:
+                e = fc[color]
+                lines.append('| %s | %d | %.3f | %.3f | %s | %s | %s |'
+                             % (color, e['n'], e['median_step_mm'], e['max_step_mm'],
+                                _fmt(e['jitter_rms_mm']), _fmt(e['jitter_p95_mm']),
+                                _fmt(e['accel_rms_mm'])))
+        lines.append('')
+        lines.append('> 抖动RMS = 原始轨迹相对滑动平均的高通残差，反映帧间抖动（基本独立于真实运动）。')
+    else:
+        lines.append('_帧数不足，无法评估帧间一致性_')
+    lines.append('')
+
+    return '\n'.join(lines) + '\n'

@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 
@@ -83,6 +84,30 @@ def load_calibration(path):
         }
 
     return cameras
+
+
+def load_calibration_serial_map(path):
+    """Return mapping: logical cam index -> physical camera serial string.
+
+    The mapping is extracted from each intrinsic folder path when available,
+    e.g. ".../cam1_DA8165486" -> {1: "DA8165486"}.
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    intr = data.get('intrinsics', {})
+    serial_map = {}
+    for i in [0, 1, 2, 3]:
+        key = 'cam%d' % i
+        folder = str((intr.get(key) or {}).get('folder', '') or '')
+        serial = ''
+        if folder:
+            base = os.path.basename(folder.rstrip('/'))
+            prefix = '%s_' % key
+            if base.startswith(prefix):
+                serial = base[len(prefix):].strip()
+        serial_map[i] = serial
+    return serial_map
 
 
 def get_camera_centers_world(cameras):

@@ -34,12 +34,14 @@ from prism.reconstruction.calibration import (
     build_corrected_transform,
     get_camera_centers_world,
     load_calibration,
+    load_calibration_serial_map,
 )
 from prism.reconstruction.realtime_reconstruction import (
     COLOR_BRG,
     COLOR_ORDER,
     advance_tracking,
     build_body_model,
+    build_led_detector,
     build_observations_interp,
     build_observations_nearest,
     estimate_pose_from_model,
@@ -123,6 +125,11 @@ DEFAULT_CLI_VALUES = {
     'g_v_high': 255,
     'min_area': 10.0,
     'max_norm_reproj_error': 0.015,
+    'detector_backend': 'hsv',
+    'yolo_weights': '',
+    'yolo_conf': 0.25,
+    'yolo_iou': 0.45,
+    'yolo_imgsz': 640,
     'max_traj_points': 5000,
     'max_predict_frames': 6,
     'viz_3d': 'y',
@@ -231,6 +238,11 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
 
     tracking.add_argument('--min-area', type=float, default=defaults['min_area'])
     tracking.add_argument('--max-norm-reproj-error', type=float, default=defaults['max_norm_reproj_error'])
+    tracking.add_argument('--detector-backend', type=str, default=defaults['detector_backend'], choices=['hsv', 'yolo', 'hybrid'])
+    tracking.add_argument('--yolo-weights', type=str, default=defaults['yolo_weights'])
+    tracking.add_argument('--yolo-conf', type=float, default=defaults['yolo_conf'])
+    tracking.add_argument('--yolo-iou', type=float, default=defaults['yolo_iou'])
+    tracking.add_argument('--yolo-imgsz', type=int, default=defaults['yolo_imgsz'])
     tracking.add_argument('--max-traj-points', type=int, default=defaults['max_traj_points'])
     tracking.add_argument('--max-predict-frames', type=int, default=defaults['max_predict_frames'])
     tracking.add_argument('--viz-3d', type=str, default=defaults['viz_3d'])
@@ -268,10 +280,20 @@ class SessionManager(object):
             'blue': ((args.b_h_low, args.b_s_low, args.b_v_low), (args.b_h_high, args.b_s_high, args.b_v_high)),
             'green': ((args.g_h_low, args.g_s_low, args.g_v_low), (args.g_h_high, args.g_s_high, args.g_v_high)),
         }
+        self.detector = build_led_detector(
+            self.hsv_cfg,
+            args.min_area,
+            backend=args.detector_backend,
+            yolo_weights=args.yolo_weights,
+            yolo_conf=args.yolo_conf,
+            yolo_iou=args.yolo_iou,
+            yolo_imgsz=args.yolo_imgsz,
+        )
 
         self.cameras = None
         self.camera_centers = None
         self.corrected_transform = None
+        self.calib_serial_by_cam = {}
         self.output_root = None
         self.task_timestamp = None
         self.traj_near_csv_path = None
@@ -333,7 +355,12 @@ class SessionManager(object):
 
     def prepare_session(self):
         args = self.args
-        self.cameras = load_calibration(os.path.expanduser(args.calib_json))
+        calib_path = os.path.expanduser(args.calib_json)
+        self.cameras = load_calibration(calib_path)
+        try:
+            self.calib_serial_by_cam = load_calibration_serial_map(calib_path)
+        except Exception:
+            self.calib_serial_by_cam = {}
         self.camera_centers = get_camera_centers_world(self.cameras)
         self.corrected_transform = build_corrected_transform(self.cameras, self.camera_centers)
 
@@ -394,6 +421,27 @@ class SessionManager(object):
             selected = parse_indices(selected_text, len(usb_devices), 4)
 
         selected_infos = [usb_devices[idx] for idx in selected]
+
+        # Align runtime camera order with calibration cam0..cam3 by serial when available.
+        serial_map = self.calib_serial_by_cam or {}
+        if serial_map:
+            by_serial = {}
+            for info in selected_infos:
+                serial = info[3]
+                if serial:
+                    by_serial[serial] = info
+
+            desired = [serial_map.get(i, '') for i in [0, 1, 2, 3]]
+            if all(s and s in by_serial for s in desired):
+                selected_infos = [by_serial[s] for s in desired]
+                print('Reordered selected cameras to match calibration serial map:')
+                for i, s in enumerate(desired):
+                    print('  calib cam%d <- serial %s' % (i, s))
+            else:
+                print('WARNING: unable to fully align selected cameras to calibration serial map.')
+                print('  calibration expects: %s' % desired)
+                print('  selected serials:   %s' % [x[3] for x in selected_infos])
+
         readbacks = []
         
         # Identify master camera (DA8165486) for trigger generation
@@ -876,8 +924,8 @@ class SessionManager(object):
                 t_ref = min(latest_ts)
                 ref_time = t_ref
                 det_cache = {}
-                obs_near = build_observations_nearest(buffers, t_ref, self.hsv_cfg, args.min_area, det_cache)
-                obs_interp = build_observations_interp(buffers, t_ref, self.hsv_cfg, args.min_area, det_cache)
+                obs_near = build_observations_nearest(buffers, t_ref, self.detector, det_cache)
+                obs_interp = build_observations_interp(buffers, t_ref, self.detector, det_cache)
 
                 hik_sel_ts = []
                 for b in buffers:
@@ -1097,6 +1145,11 @@ class SessionManager(object):
                     self.output_root,
                     calib_json=os.path.expanduser(self.args.calib_json) if self.args.calib_json else None,
                     config_path=self.args.config,
+                    detector_backend=self.args.detector_backend,
+                    yolo_weights=self.args.yolo_weights,
+                    yolo_conf=self.args.yolo_conf,
+                    yolo_iou=self.args.yolo_iou,
+                    yolo_imgsz=self.args.yolo_imgsz,
                 )
             except Exception as e:
                 console.warning(f'offline reconstruction failed: {e}')

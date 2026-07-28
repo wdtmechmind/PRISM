@@ -1,4 +1,4 @@
-# Python bytecode and caches
+# Python caches and tooling
 __pycache__/
 *.py[cod]
 *$py.class
@@ -6,20 +6,26 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 
-# Packaging and virtual environments
+# Packaging
 *.egg-info/
 build/
 dist/
-.env
-.env.*
-!.env.example
+pip-wheel-metadata/
+
+# Local environments
+.conda/
 .venv/
 venv/
 env/
+.python-version
+.env
+.env.*
+!.env.example
 
-# IDE and OS files
+# IDE and OS
 .vscode/
 .idea/
 *.swp
@@ -27,19 +33,20 @@ env/
 .DS_Store
 Thumbs.db
 
-# Runtime logs and temporary files
+# Logs and temp
 *.log
 *.tmp
 tmp/
 temp/
 
-# Large collected datasets and generated outputs
-data/raw/*
-data/processed/*
+# Data and generated results
+data/raw/**
+data/processed/**
+data/datasets/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
-# Recorded videos and generated sensor logs
+# Media and generated trajectory artifacts
 *.mp4
 *.mkv
 *.avi
@@ -48,8 +55,18 @@ data/processed/*
 fps_log.csv
 trajectory_*.csv
 time_alignment_log.csv
+rigid_pose_6d.csv
+hand_sdk_commands_timeline.csv
 
-# Local native SDK/build artifacts
+# Training outputs and model weights
+runs/
+wandb/
+*.pt
+*.onnx
+*.engine
+*.trt
+
+# Native binaries
 *.so
 *.dll
 *.dylib

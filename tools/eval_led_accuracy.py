@@ -75,6 +75,10 @@ def main():
                         help='自动检测静止段的质心最大位移范围 mm (默认 3.0)')
     parser.add_argument('--output', metavar='JSON', default=None,
                         help='将结果保存为 JSON 文件')
+    parser.add_argument('--md', action='store_true',
+                        help='将报告存为 markdown（默认同目录下 accuracy_report.md）')
+    parser.add_argument('--md-output', metavar='MD', default=None,
+                        help='markdown 输出路径（覆盖 --md 默认）')
     args = parser.parse_args()
 
     if not os.path.isfile(args.traj_csv):
@@ -86,6 +90,11 @@ def main():
         print(f'警告: 找不到 rigid_pose_6d.csv: {rigid_path}', file=sys.stderr)
         rigid_path = None
 
+    md_path = args.md_output
+    if md_path is None and args.md:
+        md_path = os.path.join(os.path.dirname(os.path.abspath(args.traj_csv)),
+                               'accuracy_report.md')
+
     result = print_accuracy_report(
         args.traj_csv,
         rigid_path=rigid_path,
@@ -93,6 +102,7 @@ def main():
         static_t1=args.static_t1,
         static_min_frames=args.static_min_frames,
         static_max_range_mm=args.static_max_range_mm,
+        md_path=md_path,
     )
 
     if args.output and result:

@@ -82,6 +82,68 @@ def _list_trials(task_dir):
     )
 
 
+def plot_pose_trajectory(rows, output_path, max_triads=50):
+    """
+    3D plot: body-origin path as a line, with small RGB coordinate-frame triads
+    (red=X, green=Y, blue=Z) drawn along it to show orientation over time.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d proj)
+
+    pos = np.array([r['pos'] for r in rows], dtype=np.float64)
+    rots = [r['rot'] for r in rows]
+
+    fig = plt.figure(figsize=(11, 9))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Origin path.
+    ax.plot(pos[:, 0], pos[:, 1], pos[:, 2], color='0.5', linewidth=1.0,
+            alpha=0.8, label='body origin')
+    ax.scatter(pos[0, 0], pos[0, 1], pos[0, 2], color='black', s=60,
+               marker='o', label='start')
+    ax.scatter(pos[-1, 0], pos[-1, 1], pos[-1, 2], color='black', s=80,
+               marker='X', label='end')
+
+    # Axis length ~ 6% of the bounding-box diagonal (fallback to 2 cm).
+    span = pos.max(axis=0) - pos.min(axis=0)
+    diag = float(np.linalg.norm(span))
+    axis_len = 0.06 * diag if diag > 1e-6 else 0.02
+
+    step = max(1, len(rows) // max_triads)
+    axis_colors = ('red', 'green', 'blue')  # X, Y, Z
+    for i in range(0, len(rows), step):
+        o = pos[i]
+        R = rots[i]
+        for k in range(3):
+            d = R[:, k] * axis_len
+            ax.plot([o[0], o[0] + d[0]], [o[1], o[1] + d[1]], [o[2], o[2] + d[2]],
+                    color=axis_colors[k], linewidth=1.5)
+
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.set_zlabel('Z (m)')
+    ax.set_title('AprilTag body 6DOF trajectory\n(RGB triads = X/Y/Z axes)')
+    ax.legend(loc='upper left', fontsize=9)
+
+    # Keep the three axes at equal scale so orientation triads look correct.
+    centers = (pos.max(axis=0) + pos.min(axis=0)) / 2.0
+    radius = max(diag / 2.0, axis_len * 2.0)
+    ax.set_xlim(centers[0] - radius, centers[0] + radius)
+    ax.set_ylim(centers[1] - radius, centers[1] + radius)
+    ax.set_zlim(centers[2] - radius, centers[2] + radius)
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except Exception:
+        pass
+    ax.view_init(elev=20, azim=-60)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 def track_trial(trial_dir, cameras, detector, rig, tag_size, tol_s,
                 max_reproj_px, smooth_window, smooth_max_gap, despike_window):
     rows = []
@@ -139,7 +201,12 @@ def track_trial(trial_dir, cameras, detector, rig, tag_size, tol_s,
         w.writerow(TAG_HEADER)
         w.writerows(tag_rows)
 
-    return rigid_path, len(rows)
+    plot_path = None
+    if rows:
+        plot_path = os.path.join(traj_dir, 'apriltag_pose_trajectory.png')
+        plot_pose_trajectory(rows, plot_path)
+
+    return rigid_path, len(rows), plot_path
 
 
 def main():
@@ -191,11 +258,13 @@ def main():
     console.info('已建模 tag: %s' % ', '.join(str(t) for t in sorted(rig['tags'])))
 
     for trial in trials:
-        rigid_path, n = track_trial(
+        rigid_path, n, plot_path = track_trial(
             trial, cameras, detector, rig, tag_size, tol_s, args.max_reproj_px,
             args.smooth_window, args.smooth_max_gap, args.despike_window)
         console.info('  %s: %d 帧有效位姿 -> %s'
                      % (os.path.basename(trial), n, os.path.basename(rigid_path)))
+        if plot_path:
+            console.saved('  轨迹位姿图: %s' % plot_path)
 
     console.done('AprilTag 追踪完成: %s' % task_dir)
 
