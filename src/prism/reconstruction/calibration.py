@@ -126,9 +126,9 @@ def build_corrected_transform(cameras, camera_centers):
 
     cam_ids = sorted(camera_centers.keys())
     arr = np.asarray([camera_centers[i] for i in cam_ids], dtype=np.float64)
-    origin = np.asarray(camera_centers.get(0, np.mean(arr, axis=0)), dtype=np.float64)
+    plane_center = np.mean(arr, axis=0)
 
-    demean = arr - origin
+    demean = arr - plane_center
     _, _, vh = np.linalg.svd(demean, full_matrices=False)
     normal = _normalize_vec(vh[-1, :])
 
@@ -143,9 +143,43 @@ def build_corrected_transform(cameras, camera_centers):
 
     rot_plane = _rotation_from_to(normal, np.array([0.0, 0.0, 1.0], dtype=np.float64))
 
-    c0 = np.asarray(camera_centers.get(0, arr[0]), dtype=np.float64)
-    c2 = np.asarray(camera_centers.get(2, arr[-1]), dtype=np.float64)
-    v = (c2 - c0) @ rot_plane.T
+    def _project_to_plane(point):
+        point = np.asarray(point, dtype=np.float64).reshape(3)
+        return point - normal * float(np.dot(point - plane_center, normal))
+
+    def _line_intersection_2d(a0, a1, b0, b1):
+        a0 = np.asarray(a0, dtype=np.float64).reshape(2)
+        a1 = np.asarray(a1, dtype=np.float64).reshape(2)
+        b0 = np.asarray(b0, dtype=np.float64).reshape(2)
+        b1 = np.asarray(b1, dtype=np.float64).reshape(2)
+        da = a1 - a0
+        db = b1 - b0
+        denom = da[0] * db[1] - da[1] * db[0]
+        if abs(float(denom)) < 1e-12:
+            return None
+        diff = b0 - a0
+        t = (diff[0] * db[1] - diff[1] * db[0]) / denom
+        return a0 + t * da
+
+    projected = {cid: _project_to_plane(camera_centers[cid]) for cid in cam_ids}
+    origin = np.asarray(plane_center, dtype=np.float64)
+    if all(cid in projected for cid in [0, 1, 2, 3]):
+        q0 = (projected[0] - plane_center) @ rot_plane.T
+        q1 = (projected[1] - plane_center) @ rot_plane.T
+        q2 = (projected[2] - plane_center) @ rot_plane.T
+        q3 = (projected[3] - plane_center) @ rot_plane.T
+        qx = _line_intersection_2d(q0[:2], q2[:2], q1[:2], q3[:2])
+        if qx is not None and np.isfinite(qx).all():
+            origin = plane_center + np.array([qx[0], qx[1], 0.0], dtype=np.float64) @ rot_plane
+
+    c0 = np.asarray(projected.get(0, arr[0]), dtype=np.float64)
+    c1 = projected.get(1, None)
+    if c1 is None:
+        # Fallback: choose the first available non-cam0 center.
+        fallback_ids = [cid for cid in cam_ids if cid != 0]
+        c1 = projected.get(fallback_ids[0], arr[-1]) if fallback_ids else arr[-1]
+    c1 = np.asarray(c1, dtype=np.float64)
+    v = (c1 - c0) @ rot_plane.T
     vx, vy = float(v[0]), float(v[1])
     theta = np.arctan2(vy, vx)
     ct = float(np.cos(-theta))

@@ -420,7 +420,8 @@ def plot_rigid_6d_frames(rigid_csv, output_path=None, max_frames=60, axis_len=No
         origin = xyz[i]
         rot = _rotation_zyx(rpy[i, 0], rpy[i, 1], rpy[i, 2])
         for a in range(3):
-            d = rot[:, a] * axis_len
+            sign = -1.0 if a == 2 else 1.0
+            d = rot[:, a] * axis_len * sign
             ax.quiver(origin[0], origin[1], origin[2], d[0], d[1], d[2],
                       color=axis_colors[a], linewidth=1.6, arrow_length_ratio=0.25, zorder=5)
 

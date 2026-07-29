@@ -63,7 +63,7 @@ class Live3DPlotter(object):
 
         for ax in [self.ax_raw, self.ax_corr]:
             ax.grid(True, linestyle='--', linewidth=0.6, alpha=0.45)
-            ax.view_init(elev=22, azim=-58)
+            ax.view_init(elev=22, azim=122)
             ax.tick_params(labelsize=8)
 
         self.fig.subplots_adjust(left=0.04, right=0.985, top=0.95, bottom=0.06, wspace=0.14)
@@ -145,7 +145,7 @@ class Live3DPlotter(object):
         if n <= 0:
             return segs
 
-        axes = [('x', 0), ('y', 1), ('z', 2)]
+        axes = [('x', 0, 1.0), ('y', 1, 1.0), ('z', 2, -1.0)]
         for i in range(n):
             p = np.asarray(pose_history[i], dtype=np.float64).reshape(-1)
             r = np.asarray(pose_rot_history[i], dtype=np.float64).reshape(-1)
@@ -158,8 +158,8 @@ class Live3DPlotter(object):
             if not np.isfinite(R).all():
                 continue
 
-            for axis_name, axis_idx in axes:
-                p1 = p0 + axis_len * R[:, axis_idx]
+            for axis_name, axis_idx, sign in axes:
+                p1 = p0 + sign * axis_len * R[:, axis_idx]
                 segs[axis_name].append(np.vstack([p0, p1]))
 
         return segs
@@ -285,7 +285,7 @@ class Live3DPlotter(object):
             R = np.asarray(pose_R, dtype=np.float64).reshape(3, 3)
             px = p0 + axis_len * R[:, 0]
             py = p0 + axis_len * R[:, 1]
-            pz = p0 + axis_len * R[:, 2]
+            pz = p0 - axis_len * R[:, 2]
 
             self.rigid_origin_raw._offsets3d = ([p0[0]], [p0[1]], [p0[2]])
             self._set_line3d(self.rigid_axes_raw['x'], p0, px)
