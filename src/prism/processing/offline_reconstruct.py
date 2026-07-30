@@ -42,11 +42,6 @@ from prism.reconstruction.realtime_reconstruction import (
     update_body_model,
 )
 
-try:
-    from prism.processing.led_accuracy import print_accuracy_report
-except Exception:  # pragma: no cover - accuracy report is optional
-    print_accuracy_report = None
-
 
 COLOR_TO_PREFIX = {'red': 'r', 'yellow': 'y', 'blue': 'b', 'green': 'g'}
 
@@ -598,15 +593,6 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backe
         traj_path, rigid_path = reconstruct_trial(
             trial_dir, cameras, detector, max_reproj, tol_s,
             smooth_window=smooth_window, smooth_max_gap=smooth_max_gap, despike_window=despike_window)
-        if traj_path and print_accuracy_report is not None:
-            try:
-                console.info('accuracy report for %s:' % os.path.basename(trial_dir))
-                print_accuracy_report(
-                    traj_path,
-                    rigid_path=rigid_path if rigid_path and os.path.isfile(rigid_path) else None,
-                )
-            except Exception as exc:
-                console.warning('accuracy report failed for %s: %s' % (os.path.basename(trial_dir), exc))
 
     console.done('offline reconstruction complete: %s' % task_dir)
 

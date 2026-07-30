@@ -1,8 +1,7 @@
 """
 LED 六自由度三角化定位精度分析核心逻辑。
 
-供 session_manager（录制结束后自动调用）和
-tools/eval_led_accuracy.py（命令行工具）共同使用。
+供 tools/eval_led_accuracy.py 和独立报告生成工具复用。
 """
 
 import csv

@@ -834,6 +834,7 @@ class SessionManager(object):
             ])
         self.trial_start_wall = None
         self.current_trial_dir = None
+        self._refresh_trajectory_plot_after_trial()
         console.success('trial stopped: trial_%06d (written=%d, dropped=%d)'
                         % (self.trial_id, total_written, total_dropped))
         if total_dropped > 0:
@@ -842,6 +843,31 @@ class SessionManager(object):
         if self.planned_trials > 0 and self.trial_id >= self.planned_trials:
             self.task_complete = True
             console.done('planned trial count reached (%d). finishing online collection.' % self.planned_trials)
+
+    def _refresh_trajectory_plot_after_trial(self):
+        # Reset tracking/pose history so the next trial starts with a clean trajectory view.
+        self.track_near = make_track_state()
+        self.track_interp = make_track_state()
+        self.rigid_model = None
+        self.pose_history = []
+        self.pose_rot_history = []
+        self.pose_valid_prev = False
+
+        if self.plotter3d is None:
+            return
+
+        empty_points = {name: [] for name in COLOR_ORDER}
+        empty_current = {name: None for name in COLOR_ORDER}
+        self.plotter3d.update(
+            empty_points,
+            empty_current,
+            mode_text='READY | waiting next trial',
+            pose_t=None,
+            pose_R=None,
+            pose_history=self.pose_history,
+            pose_rot_history=self.pose_rot_history,
+            rigid_axis_len=self.args.rigid_axis_len,
+        )
 
     def run_loop(self):
         mouse_cb = self._on_mouse_event if self.args.ui_backend == 'opencv' else None
