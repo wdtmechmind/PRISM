@@ -245,61 +245,29 @@ python3 tools/eval_led_accuracy.py \
 - `--output`：指定输出 PNG 路径
 - `--use-raw`：优先使用原始列 `x_m/y_m/z_m`，不使用平滑列
 
-## 4. Isaac Sim 工具
+## 4. Isaac Sim 仿真流水线
 
-### `isaacsim_replay.py`
-
-用途：在 Isaac Sim 中回放 PRISM 的刚体 6D 轨迹与 LED 轨迹。
+用途：将原始 trial 转换到 corrected 坐标系，生成 AUBO i5 + MechHand 的计划关节轨迹，并导出 replay 仿真视频。
 
 典型命令：
 
 ```bash
-/isaac-sim/python.sh tools/isaacsim_replay.py \
+/isaac-sim/python.sh simulation/scripts/run_replay_pipeline.py \
   --trial-dir data/raw/task_YYYYmmdd_HHMMSS_task-name/trial_000001 \
-  --fps 60
-```
-
-也可直接指定：
-
-- `--rigid`：刚体姿态 CSV
-- `--led`：LED 轨迹 CSV
-- `--gestures`：手势时间线 CSV
-
-### `isaacsim_replay_corrected.py`
-
-用途：将轨迹先映射到 corrected 坐标系，再在 Isaac Sim 里回放。
-
-典型命令：
-
-```bash
-/isaac-sim/python.sh tools/isaacsim_replay_corrected.py \
-  --trial-dir data/raw/task_20260730_103856_ball_picking/trial_000012 \
-  --fps 60 \
   --calib-json configs/devices/charuco_4cam_result.json
 ```
 
-适用场景：希望 Isaac Sim 世界坐标与在线预览里的 corrected frame 一致。
+常用参数：
 
-### `isaacsim_collect_corrected.py`
-
-用途：在 corrected-frame 场景里进行 Isaac Sim 数据采集，输出渲染视频和 UR5 末端轨迹。
-
-典型命令：
-
-```bash
-/isaac-sim/python.sh tools/isaacsim_collect_corrected.py \
-  --trial-dir data/raw/task_xxx/trial_000001 \
-  --calib-json configs/devices/charuco_4cam_result.json
-```
-
-输出：
-
-- 渲染视频
-- UR5 end-effector trajectory CSV
+- `--out-dir`：指定 corrected/planned/video 输出目录
+- `--video-path`：指定 mp4 输出路径
+- `--camera-pos 0 -0.2 0`：从对侧俯视相机录制
+- `--max-frames` / `--replay-max-frames`：快速 smoke test
+- `--dry-run`：只打印底层阶段命令
 
 ## 5. 使用建议
 
 - 做真实采集与标定：优先看 `annotate_led_dataset.py`、`capture_led_photos.py`、`prism_charuco_calibration_capture.py`。
 - 做离线几何分析：优先看 `eval_led_accuracy.py`、`track_apriltag_trajectory.py`、`plot_corrected_trial_projections.py`。
-- 做仿真回放与生成：优先看 `isaacsim_replay.py`、`isaacsim_replay_corrected.py`、`isaacsim_collect_corrected.py`。
+- 做仿真回放与生成：优先看 `simulation/scripts/run_replay_pipeline.py` 和 `simulation/README.md`。
 - 若工具支持 `--trial-dir`，通常默认会从 `trial_xxxxxx/trajectory/` 和 `trial_xxxxxx/hand/` 自动推断输入文件。

@@ -467,34 +467,24 @@ Loads `trajectory_led.csv` and `rigid_pose_6d.csv`, filters to `mode=measured` r
 
 ---
 
-## 12. Isaac Sim Replay
+## 12. Isaac Sim Replay Pipeline
 
-Rigid-body trajectories can be replayed in NVIDIA Isaac Sim for visualization, physics validation, or downstream learning pipelines.
+Raw trial trajectories can be converted to the corrected frame, planned for the
+AUBO i5 + MechHand robot, and rendered to an Isaac Sim replay video with one
+pipeline command.
 
-### Standard Replay
-
-```bash
-/isaac-sim/python.sh tools/isaacsim_replay.py \
-  --trial-dir data/raw/task_xxx/trial_000001 \
-  --fps 60
-```
-
-### Corrected-Frame Replay
-
-Uses the calibration-derived corrected coordinate frame so that Isaac Sim's world frame matches the online preview's "Corrected Frame" panel:
+### End-to-End Replay Video
 
 ```bash
-/isaac-sim/python.sh tools/isaacsim_replay_corrected.py \
+/isaac-sim/python.sh simulation/scripts/run_replay_pipeline.py \
   --trial-dir data/raw/task_xxx/trial_000001 \
-  --calib-json configs/devices/charuco_4cam_result.json \
-  --fps 60
+  --calib-json configs/devices/charuco_4cam_result.json
 ```
 
-Both tools:
-- Load `rigid_pose_6d.csv` from the trial's `trajectory/` directory.
-- Animate a rigid-body prim in Isaac Sim at the specified playback rate.
-- Place colored spheres at each LED's tracked position.
-- Accept `t_trial` as the time axis for frame-accurate playback.
+The pipeline writes corrected-frame CSVs, `planned_motion.csv`, and
+`planned_motion_overhead.mp4` under `data/processed/simulation/<task>/<trial>/`.
+See `simulation/README.md` for the staged commands and optional camera/video
+arguments.
 
 ---
 
@@ -638,14 +628,14 @@ This registers the `prism-collect`, `prism-reconstruct-trials`, `prism-analyze-t
 | `ultralytics` | YOLOv8 model inference (optional, for `yolo` / `hybrid` backend) |
 | `pyrealsense2` | RealSense D435 capture (optional) |
 
-### Isaac Sim Tools
+### Isaac Sim Pipeline
 
 Run with the Isaac Sim Python interpreter:
 
 ```bash
-/isaac-sim/python.sh tools/isaacsim_replay.py ...
-/isaac-sim/python.sh tools/isaacsim_replay_corrected.py ...
-/isaac-sim/python.sh tools/isaacsim_collect_corrected.py ...
+/isaac-sim/python.sh simulation/scripts/run_replay_pipeline.py \
+  --trial-dir data/raw/task_xxx/trial_000001 \
+  --calib-json configs/devices/charuco_4cam_result.json
 ```
 
 ---

@@ -1,0 +1,41 @@
+robot_name: aubo_i5_mechhand
+combined_urdf: simulation/assets/aubo_i5_mechhand/aubo_i5_mechhand.urdf
+combined_usd: simulation/assets/aubo_i5_mechhand/aubo_i5_mechhand.usd
+robot_prim: /World/AUBO_i5_MechHand
+
+base_link: base_link
+tool_link: wrist3_Link
+hand_base_link: mechhand_base_link
+
+world_from_base:
+  xyz: [0.0, 0.5, -1.0]
+  quat_wxyz: [1.0, 0.0, 0.0, 0.0]
+
+arm_joints:
+  - shoulder_joint
+  - upperArm_joint
+  - foreArm_joint
+  - wrist1_joint
+  - wrist2_joint
+  - wrist3_joint
+
+hand_joint_prefix: mechhand_
+hand_joints:
+  - mechhand_F1_J1
+  - mechhand_F1_J2
+  - mechhand_F1_J3
+  - mechhand_F2_J1
+  - mechhand_F2_J2
+  - mechhand_F3_J1
+  - mechhand_F3_J2
+  - mechhand_F4_J1
+  - mechhand_F4_J2
+  - mechhand_F5_J1
+  - mechhand_F5_J2
+
+default_arm_q: [0.0, -1.0, 1.4, 0.0, 1.2, 0.0]
+default_hand_pose: five_open
+
+tool_to_hand:
+  xyz: [0.0, 0.0, 0.0]
+  quat_wxyz: [1.0, 0.0, 0.0, 0.0]

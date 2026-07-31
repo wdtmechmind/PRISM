@@ -189,17 +189,17 @@ scripts/analyze_trajectory.sh data/raw/task_YYYYmmdd_HHMMSS_task-name
 prism-analyze-trajectory data/raw/task_YYYYmmdd_HHMMSS_task-name --output-dir ./traj_plots
 ```
 
-## 9. Isaac Sim 回放
+## 9. Isaac Sim 仿真流水线
 
 ```bash
-/isaac-sim/python.sh tools/isaacsim_replay.py \
+/isaac-sim/python.sh simulation/scripts/run_replay_pipeline.py \
   --trial-dir data/raw/task_YYYYmmdd_HHMMSS_task-name/trial_000001 \
-  --fps 60
+  --calib-json configs/devices/charuco_4cam_result.json
 ```
 
 更多参数见：
 
-- tools/isaacsim_replay.py
+- simulation/README.md
 
 ## 10. 已知边界
 
