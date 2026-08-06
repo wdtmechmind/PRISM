@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eaf2fb"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f4d67"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="980" fill="url(#bg)"/>
+
+  <text x="800" y="62" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="44" font-weight="700" fill="#1f2a36">LED Triangulation (Explicit Variables)</text>
+  <text x="800" y="100" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="24" fill="#3f556a">2D observations -> undistortion -> multi-view triangulation -> reprojection gating</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#1f2a36" font-size="24">
+    <circle cx="820" cy="450" r="18" fill="#ff5a5a"/>
+    <text x="848" y="458">X (3D LED)</text>
+  </g>
+
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#1f2a36" font-size="21" text-anchor="middle">
+    <rect x="110" y="210" width="220" height="108" rx="14" fill="#d9e8ff" stroke="#4f6f90" stroke-width="2"/>
+    <text x="220" y="255">Cam 0</text>
+    <text x="220" y="286">K0, D0, R0=I, t0=0</text>
+
+    <rect x="1240" y="210" width="220" height="108" rx="14" fill="#d9e8ff" stroke="#4f6f90" stroke-width="2"/>
+    <text x="1350" y="255">Cam 1</text>
+    <text x="1350" y="286">K1, D1, R1, t1</text>
+
+    <rect x="190" y="650" width="220" height="108" rx="14" fill="#d9e8ff" stroke="#4f6f90" stroke-width="2"/>
+    <text x="300" y="695">Cam 2</text>
+    <text x="300" y="726">K2, D2, R2, t2</text>
+
+    <rect x="1160" y="650" width="220" height="108" rx="14" fill="#d9e8ff" stroke="#4f6f90" stroke-width="2"/>
+    <text x="1270" y="695">Cam 3</text>
+    <text x="1270" y="726">K3, D3, R3, t3</text>
+  </g>
+
+  <g stroke="#2f4d67" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <line x1="330" y1="318" x2="802" y2="438"/>
+    <line x1="1240" y1="318" x2="838" y2="438"/>
+    <line x1="410" y1="650" x2="808" y2="466"/>
+    <line x1="1160" y1="650" x2="832" y2="466"/>
+  </g>
+
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#2d455b" font-size="20">
+    <text x="410" y="370">(u0, v0) -> undistort -> (u0~, v0~)</text>
+    <text x="975" y="370">(u1, v1) -> undistort -> (u1~, v1~)</text>
+    <text x="452" y="612">(u2, v2) -> undistort -> (u2~, v2~)</text>
+    <text x="980" y="612">(u3, v3) -> undistort -> (u3~, v3~)</text>
+  </g>
+
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#1f2a36" font-size="24">
+    <rect x="58" y="120" width="590" height="130" rx="14" fill="#fff4df" stroke="#9d7b41" stroke-width="2"/>
+    <text x="84" y="168">Observability constraints:</text>
+    <text x="84" y="202">1) Triangulation: at least 2 cameras for one LED color</text>
+    <text x="84" y="236">2) Rigid pose: at least 3 non-collinear LEDs</text>
+
+    <rect x="910" y="120" width="630" height="230" rx="14" fill="#e8f7ee" stroke="#4f8a66" stroke-width="2"/>
+    <text x="936" y="166">Core equations:</text>
+    <text x="936" y="198">A X_h = 0  with rows: u_i~ p_i3^T - p_i1^T,  v_i~ p_i3^T - p_i2^T</text>
+    <text x="936" y="230">X_h* = argmin ||A X_h||, ||X_h||=1,   X = [X/W, Y/W, Z/W]^T</text>
+    <text x="936" y="262">e_i = || pi(R_i X + t_i) - u_i~ ||_2</text>
+    <text x="936" y="294">if max e_i > tau: drop one outlier view and re-solve</text>
+    <text x="936" y="326">if still > tau: reject this LED point at this frame</text>
+  </g>
+
+  <g stroke="#8ca6bd" stroke-width="2" stroke-dasharray="8,8" fill="none">
+    <line x1="220" y1="264" x2="1350" y2="264"/>
+    <line x1="300" y1="704" x2="1270" y2="704"/>
+  </g>
+</svg>

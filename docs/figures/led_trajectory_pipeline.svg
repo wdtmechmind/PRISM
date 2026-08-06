@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5f7fa"/>
+      <stop offset="100%" stop-color="#e7eef7"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f4b66"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="900" fill="url(#bg)"/>
+  <text x="700" y="70" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="44" font-weight="700" fill="#1f2a36">LED Trajectory Reconstruction Pipeline</text>
+  <text x="700" y="108" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="22" fill="#44566b">Synchronized Multi-Camera to 3D Trajectory and 6D Pose</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#1f2a36" font-size="22" text-anchor="middle">
+    <rect x="440" y="150" rx="18" ry="18" width="520" height="86" fill="#d9e8ff" stroke="#466487" stroke-width="2"/>
+    <text x="700" y="203">Synchronized Multi-Camera Frames</text>
+
+    <rect x="440" y="272" rx="18" ry="18" width="520" height="86" fill="#d7f5e8" stroke="#3d7b63" stroke-width="2"/>
+    <text x="700" y="325">LED Detection (HSV / YOLO / Hybrid)</text>
+
+    <rect x="440" y="394" rx="18" ry="18" width="520" height="86" fill="#fff2d8" stroke="#9b7b3f" stroke-width="2"/>
+    <text x="700" y="447">Cross-View Association and Time Alignment</text>
+
+    <rect x="440" y="516" rx="18" ry="18" width="520" height="86" fill="#ffe0db" stroke="#a75b4f" stroke-width="2"/>
+    <text x="700" y="569">Triangulation + Reprojection Gating</text>
+
+    <rect x="440" y="638" rx="18" ry="18" width="520" height="86" fill="#e8dcff" stroke="#65509b" stroke-width="2"/>
+    <text x="700" y="691">Kalman Smoothing and Missing-Frame Prediction</text>
+
+    <rect x="440" y="760" rx="18" ry="18" width="520" height="86" fill="#dff3ff" stroke="#3f6f8f" stroke-width="2"/>
+    <text x="700" y="813">6D Pose by SVD + Trajectory CSV + Quality Report</text>
+  </g>
+
+  <g stroke="#2f4b66" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <line x1="700" y1="236" x2="700" y2="270"/>
+    <line x1="700" y1="358" x2="700" y2="392"/>
+    <line x1="700" y1="480" x2="700" y2="514"/>
+    <line x1="700" y1="602" x2="700" y2="636"/>
+    <line x1="700" y1="724" x2="700" y2="758"/>
+  </g>
+
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#334455">
+    <text x="1030" y="325">2D observations (u, v)</text>
+    <text x="1030" y="447">Need at least 2 valid views</text>
+    <text x="1030" y="569">Drop outlier view if max error too high</text>
+    <text x="1030" y="691">Short gaps handled by prediction</text>
+  </g>
+</svg>

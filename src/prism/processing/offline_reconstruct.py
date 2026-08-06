@@ -329,8 +329,25 @@ def _visible_str(cam_indices):
     return ','.join('cam%d' % i for i in sorted(cam_indices))
 
 
+def _parse_init_colors(raw):
+    """Parse a comma-separated color list and return exactly 3 unique colors."""
+    text = (raw or '').strip()
+    if not text:
+        raise ValueError('model init colors cannot be empty')
+    parts = [p.strip().lower() for p in text.split(',') if p.strip()]
+    if len(parts) != 3:
+        raise ValueError('model init colors must contain exactly 3 entries: %s' % raw)
+    if len(set(parts)) != 3:
+        raise ValueError('model init colors must be unique: %s' % raw)
+    for name in parts:
+        if name not in COLOR_ORDER:
+            raise ValueError('unknown model init color: %s' % name)
+    return tuple(parts)
+
+
 def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
-                      smooth_window=5, smooth_max_gap=3, despike_window=3):
+                      smooth_window=5, smooth_max_gap=3, despike_window=3,
+                      model_init_warmup_frames=10, model_init_colors=('yellow', 'blue', 'green')):
     """Reconstruct one trial; write trajectory + rigid pose CSVs. Returns paths."""
     cameras_dir = os.path.join(trial_dir, 'cameras')
     streams = discover_hik_streams(cameras_dir)
@@ -363,6 +380,7 @@ def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
 
     ts_ref = ts_by_cam[ref_i]
     rigid_model = None
+    warmup_points = []
     n_measured = 0
     n_frames = 0
     # Accumulate measured LED points per color and rigid poses so we can smooth
@@ -422,7 +440,23 @@ def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
         visible_names = [n for n in COLOR_ORDER if n in point_by_color]
         if len(point_by_color) >= 3:
             if rigid_model is None:
-                rigid_model = build_body_model(point_by_color)
+                if all(name in point_by_color for name in model_init_colors):
+                    warmup_points.append({
+                        name: np.asarray(point_by_color[name], dtype=np.float64).reshape(3)
+                        for name in model_init_colors
+                    })
+                    if len(warmup_points) >= model_init_warmup_frames:
+                        init_points = {}
+                        for name in model_init_colors:
+                            init_points[name] = np.mean(
+                                np.asarray([w[name] for w in warmup_points], dtype=np.float64),
+                                axis=0,
+                            )
+                        rigid_model = build_body_model(init_points)
+                        if rigid_model is None:
+                            warmup_points = []
+                else:
+                    warmup_points = []
             if rigid_model is not None:
                 est = estimate_pose_from_model(rigid_model['model_points'], point_by_color)
                 if est is not None:
@@ -560,6 +594,8 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backe
                      yolo_weights=None, yolo_conf=None, yolo_iou=None, yolo_imgsz=None,
                      tol_ms=8.0,
                      smooth_window=5, smooth_max_gap=3, despike_window=3,
+                     model_init_warmup_frames=10,
+                     model_init_colors=('yellow', 'blue', 'green'),
                      quality_report=True, quality_write_json=False,
                      quality_static_t0=None, quality_static_t1=None,
                      quality_static_min_frames=20, quality_static_max_range_mm=3.0):
@@ -624,11 +660,15 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backe
     console.info('calibration: %s' % calib_path)
     console.info('trials: %d | backend=%s | reproj<=%.4f | assoc tol=%.1f ms | smooth win=%d despike=%d gap<=%d'
                  % (len(trial_dirs), det_cfg['detector_backend'], max_reproj, tol_ms, smooth_window, despike_window, smooth_max_gap))
+    console.info('rigid init: warmup=%d frames | colors=%s'
+                 % (model_init_warmup_frames, ','.join(model_init_colors)))
 
     for trial_dir in trial_dirs:
         traj_path, rigid_path = reconstruct_trial(
             trial_dir, cameras, detector, max_reproj, tol_s,
-            smooth_window=smooth_window, smooth_max_gap=smooth_max_gap, despike_window=despike_window)
+            smooth_window=smooth_window, smooth_max_gap=smooth_max_gap, despike_window=despike_window,
+            model_init_warmup_frames=model_init_warmup_frames,
+            model_init_colors=model_init_colors)
         if quality_report and traj_path:
             _write_quality_report(
                 trial_dir,
@@ -671,6 +711,10 @@ def main(argv=None):
                         help='median-filter window (frames) to remove single-frame outliers; 1 disables')
     parser.add_argument('--smooth-max-gap', type=int, default=3,
                         help='max missing-frame gap bridged by interpolation before a track is split')
+    parser.add_argument('--model-init-warmup-frames', type=int, default=10,
+                        help='consecutive frames required to initialize rigid body model')
+    parser.add_argument('--model-init-colors', type=str, default='yellow,blue,green',
+                        help='fixed 3-color order to define rigid body frame, e.g. yellow,blue,green')
     parser.add_argument('--no-quality-report', action='store_true',
                         help='disable automatic trajectory quality report generation after each trial')
     parser.add_argument('--quality-write-json', action='store_true',
@@ -685,6 +729,13 @@ def main(argv=None):
                         help='maximum centroid motion range for auto static-window detection in quality evaluation')
     args = parser.parse_args(argv)
 
+    if args.model_init_warmup_frames < 1:
+        parser.error('--model-init-warmup-frames must be >= 1')
+    try:
+        model_init_colors = _parse_init_colors(args.model_init_colors)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     reconstruct_task(args.task_dir, calib_json=args.calib_json,
                      config_path=args.config, detector_backend=args.detector_backend,
                      yolo_weights=args.yolo_weights, yolo_conf=args.yolo_conf,
@@ -692,6 +743,8 @@ def main(argv=None):
                      tol_ms=args.tol_ms,
                      smooth_window=args.smooth_window, smooth_max_gap=args.smooth_max_gap,
                      despike_window=args.despike_window,
+                     model_init_warmup_frames=args.model_init_warmup_frames,
+                     model_init_colors=model_init_colors,
                      quality_report=not args.no_quality_report,
                      quality_write_json=args.quality_write_json,
                      quality_static_t0=args.quality_static_t0,
