@@ -19,6 +19,14 @@ from gpiozero import LED, AngularServo
 from gpiozero.pins.rpigpio import RPiGPIOFactory
 from gpiozero import Device
 import pigpio
+from prism.devices.rpi.gesture_intent import (
+    EncoderIntentThresholds,
+    IN,
+    IndexClickDetectorState,
+    classify_encoder_states,
+    classify_encoder_pose_from_states,
+    detect_index_click_event,
+)
 
 # --- Pin Definitions ---
 ENCODER_PINS = [17, 27, 22, 5, 6]   # PWM input pins for encoders 1-5
@@ -33,8 +41,13 @@ DEFAULT_EVENT_HOST = os.environ.get('PRISM_RPI_EVENT_HOST') or DEFAULT_HAND_HOST
 DEFAULT_EVENT_PORT = int(os.environ.get('PRISM_RPI_EVENT_PORT', '60701'))
 DEFAULT_TRIGGER_THRESHOLD = float(os.environ.get('PRISM_HAND_TRIGGER_THRESHOLD', '0.5'))
 DEFAULT_FIVE_GRASP_THRESHOLD = float(os.environ.get('PRISM_FIVE_GRASP_THRESHOLD', '0.45'))
-DEFAULT_THUMB_IN_THRESHOLD = float(os.environ.get('PRISM_THUMB_IN_THRESHOLD', '0.5'))
+DEFAULT_OPEN_THRESHOLD = float(os.environ.get('PRISM_HAND_OPEN_THRESHOLD', '0.35'))
+DEFAULT_CLOSED_THRESHOLD = float(os.environ.get('PRISM_HAND_CLOSED_THRESHOLD', '0.60'))
+DEFAULT_THUMB_IN_THRESHOLD = float(os.environ.get('PRISM_THUMB_IN_THRESHOLD', '0.60'))
 DEFAULT_INDEX_PRESS_MIN = float(os.environ.get('PRISM_INDEX_PRESS_MIN', '0.2'))
+DEFAULT_INDEX_PRESS_MAX = float(os.environ.get('PRISM_INDEX_PRESS_MAX', '0.6'))
+DEFAULT_STABLE_TIME_S = float(os.environ.get('PRISM_HAND_STABLE_TIME_S', '0.12'))
+DEFAULT_COOLDOWN_S = float(os.environ.get('PRISM_HAND_COOLDOWN_S', '0.2'))
 DEFAULT_INDEX_CLICK_WINDOW_S = float(os.environ.get('PRISM_INDEX_CLICK_WINDOW_S', '0.7'))
 
 GESTURE_COMMANDS = {
@@ -53,16 +66,16 @@ GESTURE_COMMANDS = {
 }
 
 RECOVERY_POSES = {
-    'five_grasp': ('five_open', 'thumb_out'),
+    'five_grasp': 'five_open',
     'two_grasp_b': 'two_open_b',
-    'three_grasp_b': ('three_open_b', 'thumb_out'),
-    'index_point': ('five_open', 'thumb_out'),
-    'index_press': ('five_open', 'thumb_out'),
+    'three_grasp_b': 'three_open_b',
+    'index_point': 'five_open',
+    'index_press': 'five_open',
     'thumb_in': 'thumb_out',
 }
 
-EXCLUSIVE_ACTIONS = ('five_grasp', 'three_grasp_b', 'index_point', 'index_press')
-ACTIVE_ACTION_ORDER = ('two_grasp_b', 'thumb_in', 'five_grasp', 'three_grasp_b', 'index_point', 'index_press')
+EXCLUSIVE_ACTIONS = ('index_press', 'index_point', 'five_grasp', 'three_grasp_b', 'two_grasp_b')
+ACTIVE_ACTION_ORDER = ('two_grasp_b', 'five_grasp', 'three_grasp_b', 'index_point', 'index_press')
 
 # --- PWM Reception via pigpio ---
 # gpiozero does not natively read PWM duty cycle/frequency.
@@ -86,13 +99,22 @@ _event_port = DEFAULT_EVENT_PORT
 _event_logging_enabled = True
 _hand_trigger_threshold = DEFAULT_TRIGGER_THRESHOLD
 _five_grasp_threshold = DEFAULT_FIVE_GRASP_THRESHOLD
+_open_threshold = DEFAULT_OPEN_THRESHOLD
+_closed_threshold = DEFAULT_CLOSED_THRESHOLD
 _thumb_in_threshold = DEFAULT_THUMB_IN_THRESHOLD
 _index_press_min = DEFAULT_INDEX_PRESS_MIN
+_index_press_max = DEFAULT_INDEX_PRESS_MAX
+_stable_time_s = DEFAULT_STABLE_TIME_S
+_cooldown_s = DEFAULT_COOLDOWN_S
 _index_click_window_s = DEFAULT_INDEX_CLICK_WINDOW_S
 _hand_trigger_enabled = True
 _active_hand_actions = set()
-_index_click_was_above = False
-_last_index_click_time = None
+_index_click_state = IndexClickDetectorState()
+_candidate_pose = None
+_candidate_pose_since_s = None
+_stable_pose = None
+_last_sent_action_times_s = {}
+_gesture_debug_context = {}
 _callbacks = []
 
 def _make_pwm_callback(pin):
@@ -228,12 +250,19 @@ def get_encoder_angles(use_calibration=True):
 
 def configure_hand_trigger(host=None, port=None, timeout_s=None, threshold=None,
                            five_grasp_threshold=None, thumb_in_threshold=None,
-                           index_press_min=None, index_click_window_s=None, enabled=True,
+                           index_press_min=None, index_press_max=None,
+                           open_threshold=None, closed_threshold=None,
+                           stable_time_s=None, cooldown_s=None,
+                           index_click_window_s=None, enabled=True,
                            event_host=None, event_port=None, event_logging_enabled=True):
     """Configure edge-triggered hand socket commands from encoder state."""
     global _hand_host, _hand_port, _hand_timeout_s, _hand_trigger_threshold, _five_grasp_threshold
-    global _thumb_in_threshold, _index_press_min, _index_click_window_s, _hand_trigger_enabled
+    global _thumb_in_threshold, _index_press_min, _index_press_max, _index_click_window_s
+    global _open_threshold, _closed_threshold, _stable_time_s, _cooldown_s
+    global _hand_trigger_enabled
     global _event_host, _event_port, _event_logging_enabled
+    global _index_click_state, _candidate_pose, _candidate_pose_since_s, _stable_pose
+    global _last_sent_action_times_s
     if host is not None:
         _hand_host = host
     if port is not None:
@@ -244,10 +273,26 @@ def configure_hand_trigger(host=None, port=None, timeout_s=None, threshold=None,
         _hand_trigger_threshold = float(threshold)
     if five_grasp_threshold is not None:
         _five_grasp_threshold = float(five_grasp_threshold)
+    if open_threshold is not None:
+        _open_threshold = float(open_threshold)
+    if closed_threshold is not None:
+        _closed_threshold = float(closed_threshold)
+    if threshold is not None and open_threshold is None and closed_threshold is None:
+        legacy = float(threshold)
+        _open_threshold = legacy
+        _closed_threshold = legacy
+    if five_grasp_threshold is not None and closed_threshold is None:
+        _closed_threshold = float(five_grasp_threshold)
     if thumb_in_threshold is not None:
         _thumb_in_threshold = float(thumb_in_threshold)
     if index_press_min is not None:
         _index_press_min = float(index_press_min)
+    if index_press_max is not None:
+        _index_press_max = float(index_press_max)
+    if stable_time_s is not None:
+        _stable_time_s = max(0.0, float(stable_time_s))
+    if cooldown_s is not None:
+        _cooldown_s = max(0.0, float(cooldown_s))
     if index_click_window_s is not None:
         _index_click_window_s = float(index_click_window_s)
     if event_host is not None:
@@ -256,6 +301,12 @@ def configure_hand_trigger(host=None, port=None, timeout_s=None, threshold=None,
         _event_port = int(event_port)
     _event_logging_enabled = bool(event_logging_enabled)
     _hand_trigger_enabled = bool(enabled)
+    _index_click_state = IndexClickDetectorState()
+    _candidate_pose = None
+    _candidate_pose_since_s = None
+    _stable_pose = None
+    _last_sent_action_times_s = {}
+    _active_hand_actions.clear()
 
 def send_hand_command(command):
     """Send a raw DexHand SDK command to the host hand TCP port."""
@@ -269,7 +320,7 @@ def send_hand_command(command):
         sock.sendall(cmd.encode('utf-8'))
     return cmd
 
-def send_event_log(action, command, status='ok', message=''):
+def send_event_log(action, command, status='ok', message='', debug=None):
     """Send one RPi hand event to the PRISM collector over UDP."""
     if not _event_logging_enabled or not _event_host or int(_event_port) <= 0:
         return False
@@ -288,6 +339,12 @@ def send_event_log(action, command, status='ok', message=''):
         'angles': angles,
         'readings': readings,
     }
+    if debug:
+        payload['encoder_states'] = debug.get('encoder_states')
+        payload['candidate_pose'] = debug.get('candidate_pose')
+        payload['stable_pose'] = debug.get('stable_pose')
+        payload['click_event'] = debug.get('click_event')
+        payload['active_actions'] = debug.get('active_actions')
     data = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.sendto(data, (_event_host, int(_event_port)))
@@ -296,17 +353,14 @@ def send_event_log(action, command, status='ok', message=''):
 def _positions_ready(positions):
     return all(positions.get(channel) is not None for channel in range(1, 6))
 
-def _closed(value):
-    return value is not None and value > _hand_trigger_threshold
-
-def _open(value):
-    return value is not None and value <= _hand_trigger_threshold
-
-def _five_grasp_closed(value):
-    return value is not None and value > _five_grasp_threshold
-
-def _thumb_in(value):
-    return value is not None and value > _thumb_in_threshold
+def _build_thresholds():
+    return EncoderIntentThresholds(
+        open_threshold=_open_threshold,
+        closed_threshold=_closed_threshold,
+        thumb_in_threshold=_thumb_in_threshold,
+        index_press_min=_index_press_min,
+        index_press_max=_index_press_max,
+    )
 
 def _as_tuple(value):
     if value is None:
@@ -316,138 +370,134 @@ def _as_tuple(value):
     return (value,)
 
 def classify_encoder_pose(positions):
-    """Map Enc1..Enc5 calibrated positions to one stable CLI hand pose.
-
-    Enc1: thumb horizontal swing; Enc2: thumb flexion;
-    Enc3: ring; Enc4: middle; Enc5: index.
-    Click actions are handled separately because they are edge events.
-    """
-    if not _positions_ready(positions):
-        return None
-
-    thumb_swing = positions[1]
-    thumb_flex = positions[2]
-    ring = positions[3]
-    middle = positions[4]
-    index = positions[5]
-
-    thumb_flex_closed = _closed(thumb_flex)
-    ring_closed = _closed(ring)
-    middle_closed = _closed(middle)
-    index_closed = _closed(index)
-
-    if thumb_flex_closed and middle_closed and ring_closed and _index_press_min <= index <= _hand_trigger_threshold:
-        return 'index_press'
-
-    if thumb_flex_closed and _open(index) and middle_closed and ring_closed:
-        return 'index_point'
-
-    if all(_five_grasp_closed(positions[channel]) for channel in (2, 3, 4)):
-        return 'five_grasp'
-
-    if middle_closed and index_closed:
-        return 'three_grasp_b'
-
-    if _thumb_in(thumb_swing):
-        return 'thumb_in'
-
-    return None
+    """Map Enc1..Enc5 calibrated positions to one stable candidate pose."""
+    states = classify_encoder_states(positions, _build_thresholds())
+    return classify_encoder_pose_from_states(states)
 
 def _index_click_pose(positions):
-    global _index_click_was_above, _last_index_click_time
-    if not _positions_ready(positions):
-        return None
-
-    index_above = _closed(positions[5])
-    click_context = (
-        _open(positions[2]) and _open(positions[3]) and _open(positions[4])
+    global _index_click_state
+    states = classify_encoder_states(positions, _build_thresholds())
+    pose, _index_click_state = detect_index_click_event(
+        states,
+        _index_click_state,
+        time.monotonic(),
+        _index_click_window_s,
     )
-    pose = None
-    if index_above and not _index_click_was_above and click_context:
-        now = time.monotonic()
-        if _last_index_click_time is not None and now - _last_index_click_time <= _index_click_window_s:
-            pose = 'index_double_click'
-            _last_index_click_time = None
-        else:
-            pose = 'index_single_click'
-            _last_index_click_time = now
-    _index_click_was_above = index_above
     return pose
 
-def _send_pose(pose, sent_commands):
+def _in_action_cooldown(action, now_s):
+    if _cooldown_s <= 0.0:
+        return False
+    last = _last_sent_action_times_s.get(action)
+    return last is not None and now_s - last < _cooldown_s
+
+def _send_pose(pose, sent_commands, now_s=None, apply_cooldown=False):
+    if now_s is None:
+        now_s = time.monotonic()
+    if apply_cooldown and _in_action_cooldown(pose, now_s):
+        return False
     command = GESTURE_COMMANDS[pose]
     try:
         sent = send_hand_command(command)
     except Exception as exc:
-        send_event_log(pose, command, status='error', message=str(exc))
+        send_event_log(pose, command, status='error', message=str(exc), debug=_gesture_debug_context)
         raise
-    send_event_log(pose, sent, status='ok')
+    send_event_log(pose, sent, status='ok', debug=_gesture_debug_context)
+    if apply_cooldown:
+        _last_sent_action_times_s[pose] = now_s
     sent_commands.append(sent)
+    return True
 
 def _recover_action(action, sent_commands):
     for pose in _as_tuple(RECOVERY_POSES.get(action)):
         _send_pose(pose, sent_commands)
 
-def _activate_action(action, sent_commands):
+def _activate_action(action, sent_commands, now_s=None):
     if action in _active_hand_actions:
         return
-    _send_pose(action, sent_commands)
-    _active_hand_actions.add(action)
+    if _send_pose(action, sent_commands, now_s=now_s, apply_cooldown=True):
+        _active_hand_actions.add(action)
 
-def _recover_active_action(action, sent_commands):
+def _recover_active_action(action, sent_commands, states=None):
     if action not in _active_hand_actions:
         return
+    if action == 'thumb_in' and states is not None:
+        # Thumb-out should only happen when Enc1 actually leaves IN.
+        if states.get('thumb_swing') == IN:
+            return
     _recover_action(action, sent_commands)
     _active_hand_actions.discard(action)
 
-def _recover_actions(actions, sent_commands):
+def _recover_actions(actions, sent_commands, states=None):
     for action in actions:
-        _recover_active_action(action, sent_commands)
+        _recover_active_action(action, sent_commands, states=states)
 
-def _recover_all_except(keep_actions, sent_commands):
+def _recover_all_except(keep_actions, sent_commands, states=None):
     keep = set(keep_actions)
     for action in ACTIVE_ACTION_ORDER:
         if action not in keep:
-            _recover_active_action(action, sent_commands)
+            _recover_active_action(action, sent_commands, states=states)
+
+def _update_stable_pose(candidate_pose, now_s):
+    global _candidate_pose, _candidate_pose_since_s, _stable_pose
+
+    if candidate_pose != _candidate_pose:
+        _candidate_pose = candidate_pose
+        _candidate_pose_since_s = now_s
+
+    if _candidate_pose_since_s is None:
+        _candidate_pose_since_s = now_s
+
+    held_long_enough = (now_s - _candidate_pose_since_s) >= _stable_time_s
+    if held_long_enough:
+        _stable_pose = candidate_pose
+    return _stable_pose
 
 def update_hand_trigger_from_encoders():
     """Send hand socket commands from encoder-derived stable poses and click edges."""
+    global _gesture_debug_context
     if not _hand_trigger_enabled:
         return []
 
+    now_s = time.monotonic()
     positions = get_encoder_positions(use_calibration=True)
-    sent_commands = []
-    click_pose = _index_click_pose(positions)
+    thresholds = _build_thresholds()
+    states = classify_encoder_states(positions, thresholds)
+    candidate_pose = classify_encoder_pose_from_states(states)
+    stable_pose = _update_stable_pose(candidate_pose, now_s)
 
-    desired_pose = classify_encoder_pose(positions)
-    if desired_pose in ('five_grasp', 'three_grasp_b'):
-        _recover_all_except((desired_pose,), sent_commands)
-        _activate_action(desired_pose, sent_commands)
-        return sent_commands
+    sent_commands = []
+    click_pose, _ = detect_index_click_event(
+        states,
+        _index_click_state,
+        now_s,
+        _index_click_window_s,
+    )
+
+    _gesture_debug_context = {
+        'encoder_states': states,
+        'candidate_pose': candidate_pose,
+        'stable_pose': stable_pose,
+        'click_event': click_pose,
+        'active_actions': sorted(_active_hand_actions),
+    }
 
     if click_pose is not None:
-        _send_pose(click_pose, sent_commands)
+        _send_pose(click_pose, sent_commands, now_s=now_s, apply_cooldown=True)
 
-    if desired_pose in ('index_point', 'index_press'):
-        _recover_all_except((desired_pose,), sent_commands)
-        _activate_action(desired_pose, sent_commands)
-        return sent_commands
-
-    _recover_actions(EXCLUSIVE_ACTIONS, sent_commands)
-
-    thumb_active = desired_pose == 'thumb_in'
-    if thumb_active:
-        _activate_action('thumb_in', sent_commands)
+    if stable_pose in EXCLUSIVE_ACTIONS:
+        _recover_all_except((stable_pose,), sent_commands, states=states)
+        _activate_action(stable_pose, sent_commands, now_s=now_s)
     else:
-        _recover_actions(('two_grasp_b', 'thumb_in'), sent_commands)
-        return sent_commands
+        _recover_actions(EXCLUSIVE_ACTIONS, sent_commands, states=states)
 
-    thumb_flex = positions.get(2)
-    two_grasp_active = 'thumb_in' in _active_hand_actions and _five_grasp_closed(thumb_flex)
-    if two_grasp_active:
-        _activate_action('two_grasp_b', sent_commands)
+    thumb_mode_active = states.get('thumb_swing') == IN
+    if thumb_mode_active:
+        _activate_action('thumb_in', sent_commands, now_s=now_s)
     else:
-        _recover_active_action('two_grasp_b', sent_commands)
+        _recover_active_action('thumb_in', sent_commands, states=states)
+
+    _gesture_debug_context['active_actions'] = sorted(_active_hand_actions)
 
     return sent_commands
 
@@ -479,14 +529,24 @@ def parse_args(argv=None):
                         help='PRISM collector UDP port for event logging; <=0 disables logging')
     parser.add_argument('--disable-event-log', action='store_true',
                         help='send hand commands without UDP event logging')
-    parser.add_argument('--trigger-threshold', type=float, default=DEFAULT_TRIGGER_THRESHOLD,
-                        help='normalized encoder threshold for hand triggers')
-    parser.add_argument('--five-grasp-threshold', type=float, default=DEFAULT_FIVE_GRASP_THRESHOLD,
-                        help='Enc2/3/4 normalized threshold for five_grasp')
+    parser.add_argument('--trigger-threshold', type=float, default=None,
+                        help='legacy single-threshold mode; if open/closed thresholds are unset, both use this value')
+    parser.add_argument('--five-grasp-threshold', type=float, default=None,
+                        help='legacy alias for closed-threshold when closed-threshold is unset')
+    parser.add_argument('--open-threshold', type=float, default=None,
+                        help='normalized value <= this is OPEN')
+    parser.add_argument('--closed-threshold', type=float, default=None,
+                        help='normalized value >= this is CLOSED')
     parser.add_argument('--thumb-in-threshold', type=float, default=DEFAULT_THUMB_IN_THRESHOLD,
-                        help='Enc1 normalized value above this sends thumb_in; otherwise thumb_out on recovery')
+                        help='Enc1 normalized value >= this is thumb swing IN (otherwise NORMAL_OR_OUT)')
     parser.add_argument('--index-press-min', type=float, default=DEFAULT_INDEX_PRESS_MIN,
-                        help='minimum Enc5 normalized value for index_press when thumb/middle/ring are closed')
+                        help='minimum Enc5 normalized value for index_press band')
+    parser.add_argument('--index-press-max', type=float, default=DEFAULT_INDEX_PRESS_MAX,
+                        help='maximum Enc5 normalized value for index_press band')
+    parser.add_argument('--stable-time-s', type=float, default=DEFAULT_STABLE_TIME_S,
+                        help='candidate pose must hold this long before activation')
+    parser.add_argument('--cooldown-s', type=float, default=DEFAULT_COOLDOWN_S,
+                        help='minimum interval between repeated sends of the same action')
     parser.add_argument('--index-click-window-s', type=float, default=DEFAULT_INDEX_CLICK_WINDOW_S,
                         help='second Enc5 click within this window sends index_double_click')
     parser.add_argument('--disable-hand-trigger', action='store_true',
@@ -506,6 +566,27 @@ def leds_off():
     for led in leds:
         led.off()
 
+def _format_intent_debug_text():
+    states = _gesture_debug_context.get('encoder_states') or {}
+    if not states:
+        return "states: n/a"
+
+    thumb_swing = states.get('thumb_swing', '?')
+    thumb_flex = states.get('thumb_flex', '?')
+    ring = states.get('ring', '?')
+    middle = states.get('middle', '?')
+    index = states.get('index', '?')
+    press_band = 'Y' if states.get('index_in_press_band') else 'N'
+    candidate = _gesture_debug_context.get('candidate_pose') or 'idle'
+    stable = _gesture_debug_context.get('stable_pose') or 'idle'
+    click = _gesture_debug_context.get('click_event') or '-'
+    active = ','.join(_gesture_debug_context.get('active_actions') or []) or '-'
+
+    return (
+        "S[1:%s 2:%s 3:%s 4:%s 5:%s PB:%s] C:%s ST:%s CLK:%s A:%s"
+        % (thumb_swing, thumb_flex, ring, middle, index, press_band, candidate, stable, click, active)
+    )
+
 # --- Main ---
 def main(argv=None):
     args = parse_args(argv)
@@ -515,8 +596,13 @@ def main(argv=None):
         timeout_s=args.hand_timeout_s,
         threshold=args.trigger_threshold,
         five_grasp_threshold=args.five_grasp_threshold,
+        open_threshold=args.open_threshold,
+        closed_threshold=args.closed_threshold,
         thumb_in_threshold=args.thumb_in_threshold,
         index_press_min=args.index_press_min,
+        index_press_max=args.index_press_max,
+        stable_time_s=args.stable_time_s,
+        cooldown_s=args.cooldown_s,
         index_click_window_s=args.index_click_window_s,
         enabled=not args.disable_hand_trigger,
         event_host=args.event_host,
@@ -536,19 +622,22 @@ def main(argv=None):
             print("Hand event log target: %s:%d" % (_event_host, _event_port))
         else:
             print("Hand event log disabled.")
-        print("  Enc1 thumb swing: > %.1f%% -> thumb_in; recovery -> thumb_out" % (
+        print("  Thresholds: OPEN <= %.1f%%, CLOSED >= %.1f%%" % (
+            _open_threshold * 100.0,
+            _closed_threshold * 100.0,
+        ))
+        print("  Enc1 thumb swing: >= %.1f%% -> IN, else NORMAL_OR_OUT" % (
             _thumb_in_threshold * 100.0,
         ))
-        print("  Enc2 thumb flex, Enc3 ring, Enc4 middle, Enc5 index; flex threshold %.1f%%" % (
-            _hand_trigger_threshold * 100.0,
+        print("  Index press band: %.1f%% .. %.1f%% (while Enc2/3/4 CLOSED)" % (
+            _index_press_min * 100.0,
+            _index_press_max * 100.0,
         ))
-        print("  Five grasp: Enc2/3/4 > %.1f%%; recovery -> five_open + thumb_out" % (
-            _five_grasp_threshold * 100.0,
+        print("  Stable confirmation: %.3fs, action cooldown: %.3fs" % (
+            _stable_time_s,
+            _cooldown_s,
         ))
-        print("  Two grasp B: thumb_in active and Enc2 > %.1f%%; Enc2 release sends two_open_b" % (
-            _five_grasp_threshold * 100.0,
-        ))
-        print("  Stable poses: five_grasp, two_grasp_b, three_grasp_b, index_point, index_press, thumb_in")
+        print("  Stable poses priority: index_press > index_point > five_grasp > three_grasp_b > two_grasp_b > thumb_in")
         print("  Enc5 solo rising edge: single click; second edge within %.2fs: double click" % _index_click_window_s)
     else:
         print("Hand trigger disabled.")
@@ -560,6 +649,7 @@ def main(argv=None):
     leds_on()
 
     print("Reading encoder angles. Press Ctrl+C to stop.\n")
+    print("Debug fields: S=encoder states, C=candidate pose, ST=stable pose, CLK=click event, A=active actions")
     try:
         while True:
             angles = get_encoder_angles()
@@ -573,7 +663,8 @@ def main(argv=None):
                 f"Enc{i}: {a:.1f}°" if a is not None else f"Enc{i}: ---"
                 for i, a in angles.items()
             ]
-            print("  |  ".join(parts), end="\r")
+            intent_debug = _format_intent_debug_text()
+            print("  |  ".join(parts) + "  ||  " + intent_debug, end="\r")
             time.sleep(0.05)
     except KeyboardInterrupt:
         print("\nShutting down...")
