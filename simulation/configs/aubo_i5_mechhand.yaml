@@ -36,6 +36,12 @@ hand_joints:
 default_arm_q: [0.0, -1.0, 1.4, 0.0, 1.2, 0.0]
 default_hand_pose: five_open
 
+planning:
+  use_orientation: true
+  orientation_weight: 0.35
+  max_iters: 80
+  tolerance: 0.005
+
 tool_to_hand:
   xyz: [0.0, 0.0, 0.0]
   quat_wxyz: [1.0, 0.0, 0.0, 0.0]

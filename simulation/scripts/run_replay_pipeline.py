@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+import yaml
+
 
 _THIS_FILE = Path(__file__).resolve()
 _REPO_ROOT = _THIS_FILE.parents[2]
@@ -35,6 +37,13 @@ def resolve_path(value: Optional[str], base: Path = _REPO_ROOT) -> Optional[Path
     return (base / path).resolve()
 
 
+def load_robot_config(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
 def run_step(label: str, command: List[str], dry_run: bool = False) -> None:
     print("\n[pipeline] %s" % label)
     print("[pipeline] %s" % " ".join(str(part) for part in command))
@@ -54,10 +63,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-config", default=str(_REPO_ROOT / "simulation" / "configs" / "aubo_i5_mechhand.yaml"))
     parser.add_argument("--isaac-python", default=default_isaac_python(), help="Python launcher for Isaac Sim scripts")
     parser.add_argument("--use-raw", action="store_true", help="use raw pose/LED columns instead of smoothed columns")
-    parser.add_argument("--use-orientation", action="store_true", help="ask the planner to minimize orientation too")
-    parser.add_argument("--orientation-weight", type=float, default=0.35)
-    parser.add_argument("--max-iters", type=int, default=80)
-    parser.add_argument("--tolerance", type=float, default=0.005)
+    parser.add_argument("--use-orientation", dest="use_orientation", default=None, action=argparse.BooleanOptionalAction, help="ask the planner to minimize orientation too")
+    parser.add_argument("--orientation-weight", type=float, default=None)
+    parser.add_argument("--max-iters", type=int, default=None)
+    parser.add_argument("--tolerance", type=float, default=None)
     parser.add_argument("--stride", type=int, default=1, help="planning stride")
     parser.add_argument("--max-frames", type=int, default=0, help="planning max frames; 0 means all frames")
     parser.add_argument("--replay-stride", type=int, default=1)
@@ -81,6 +90,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("trial dir not found: %s" % trial_dir)
     if calib_json is None or not calib_json.is_file():
         raise SystemExit("calibration JSON not found: %s" % calib_json)
+    robot_config = resolve_path(args.robot_config)
+    if robot_config is None:
+        raise SystemExit("robot config not found: %s" % args.robot_config)
+    planning_config = (load_robot_config(robot_config).get("planning", {}) or {})
 
     out_dir = resolve_path(args.out_dir) if args.out_dir else default_output_dir(trial_dir)
     assert out_dir is not None
@@ -108,20 +121,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.isaac_python,
         "simulation/scripts/plan_robot_motion.py",
         "--corrected-trajectory", str(corrected_trajectory),
-        "--robot-config", str(resolve_path(args.robot_config)),
+        "--robot-config", str(robot_config),
         "--out", str(planned_motion),
-        "--orientation-weight", str(args.orientation_weight),
-        "--max-iters", str(args.max_iters),
-        "--tolerance", str(args.tolerance),
         "--stride", str(max(1, args.stride)),
         "--max-frames", str(max(0, args.max_frames)),
     ]
+    if args.orientation_weight is not None:
+        plan_cmd.extend(["--orientation-weight", str(args.orientation_weight)])
+    if args.max_iters is not None:
+        plan_cmd.extend(["--max-iters", str(args.max_iters)])
+    if args.tolerance is not None:
+        plan_cmd.extend(["--tolerance", str(args.tolerance)])
     if gestures.is_file():
         plan_cmd.extend(["--gestures", str(gestures)])
     else:
         print("[pipeline] gesture file not found; planner will use default hand pose: %s" % gestures)
-    if args.use_orientation:
+    use_orientation = bool(planning_config.get("use_orientation", False)) if args.use_orientation is None else bool(args.use_orientation)
+    if use_orientation:
         plan_cmd.append("--use-orientation")
+    else:
+        plan_cmd.append("--no-use-orientation")
 
     materials_cmd = [args.isaac_python, "simulation/scripts/apply_robot_materials.py"]
 
@@ -129,7 +148,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.isaac_python,
         "simulation/scripts/replay_planned_motion.py",
         "--planned-motion", str(planned_motion),
-        "--robot-config", str(resolve_path(args.robot_config)),
+        "--robot-config", str(robot_config),
         "--record-video",
         "--video-path", str(video_path),
         "--video-fps", str(args.video_fps),

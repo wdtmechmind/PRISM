@@ -153,10 +153,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gestures", default=None, help="sdk_commands.csv; uses trial_time when available")
     parser.add_argument("--robot-config", default=str(_REPO_ROOT / "simulation" / "configs" / "aubo_i5_mechhand.yaml"))
     parser.add_argument("--out", default=None)
-    parser.add_argument("--use-orientation", action="store_true", help="also minimize corrected-frame orientation during IK")
-    parser.add_argument("--orientation-weight", type=float, default=0.35)
-    parser.add_argument("--max-iters", type=int, default=80)
-    parser.add_argument("--tolerance", type=float, default=0.005)
+    parser.add_argument("--use-orientation", dest="use_orientation", default=None, action=argparse.BooleanOptionalAction, help="also minimize corrected-frame orientation during IK")
+    parser.add_argument("--orientation-weight", type=float, default=None)
+    parser.add_argument("--max-iters", type=int, default=None)
+    parser.add_argument("--tolerance", type=float, default=None)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=0)
     return parser
@@ -174,6 +174,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     hand_joints = list(config["hand_joints"])
     hand_prefix = str(config.get("hand_joint_prefix", "mechhand_"))
     default_pose = str(config.get("default_hand_pose", "five_open"))
+    planning_config = config.get("planning", {}) or {}
+    use_orientation = bool(planning_config.get("use_orientation", False)) if args.use_orientation is None else bool(args.use_orientation)
+    orientation_weight = float(args.orientation_weight if args.orientation_weight is not None else planning_config.get("orientation_weight", 0.35))
+    max_iters = int(args.max_iters if args.max_iters is not None else planning_config.get("max_iters", 80))
+    tolerance = float(args.tolerance if args.tolerance is not None else planning_config.get("tolerance", 0.005))
     chain = load_serial_chain(config["combined_urdf"], config["base_link"], config["tool_link"], arm_joints)
 
     world_from_base_cfg = config.get("world_from_base", {}) or {}
@@ -188,7 +193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     gesture_timeline = GestureTimeline(gesture_events, default_pose=default_pose)
 
     q = np.asarray(config.get("default_arm_q", [0.0] * len(arm_joints)), dtype=np.float64).reshape(len(arm_joints))
-    orientation_weight = float(args.orientation_weight) if args.use_orientation else 0.0
+    orientation_weight = orientation_weight if use_orientation else 0.0
     planned_rows = []
     ok_count = 0
     errors = []
@@ -200,8 +205,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             tool_target_base,
             q,
             orientation_weight=orientation_weight,
-            max_iters=args.max_iters,
-            tolerance=args.tolerance,
+            max_iters=max_iters,
+            tolerance=tolerance,
         )
         if success:
             ok_count += 1

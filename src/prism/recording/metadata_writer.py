@@ -44,6 +44,10 @@ def write_task_metadata(session_dir, args, timestamp):
         ('hand_generation', args.hand_generation),
         ('post_process', args.post_process),
         ('rpi_port', args.rpi_port),
+        ('rpi_event_udp', {
+            'host': getattr(args, 'rpi_event_host', ''),
+            'port': getattr(args, 'rpi_event_port', 0),
+        }),
         ('sdk_script', args.sdk_script),
         ('feedback_port', args.feedback_port),
         ('rpi_sdk_feedback_status', 'partial_cli_socket'),

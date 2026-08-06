@@ -3,7 +3,9 @@ import csv
 import json
 import os
 import signal
+import socket
 import sys
+import threading
 import time
 
 import cv2
@@ -66,6 +68,39 @@ DEFAULT_ONLINE_CONFIG = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'configs', 'collection', 'default_online.yaml')
 )
 
+HAND_COMMAND_LOG_HEADER = ['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message']
+RPI_ENCODER_LOG_HEADER = (
+    ['t_sec', 'wall_time', 'trial_time', 'action', 'status', 'source', 'rpi_wall_time', 'rpi_monotonic'] +
+    ['enc%d_pos' % i for i in range(1, 6)] +
+    ['enc%d_angle_deg' % i for i in range(1, 6)] +
+    ['enc%d_duty' % i for i in range(1, 6)] +
+    ['enc%d_pulse_width_us' % i for i in range(1, 6)] +
+    ['enc%d_period_us' % i for i in range(1, 6)] +
+    ['message']
+)
+
+
+def _event_channel_value(mapping, channel, field=None):
+    if not isinstance(mapping, dict):
+        return None
+    item = mapping.get(str(channel))
+    if item is None:
+        item = mapping.get(channel)
+    if field is None:
+        return item
+    if not isinstance(item, dict):
+        return None
+    return item.get(field)
+
+
+def _csv_value(value, precision=6):
+    if value is None:
+        return ''
+    try:
+        return ('%%.%df' % precision) % float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
 DEFAULT_CLI_VALUES = {
     'task_name': 'dexhand_task',
     'num_trials': 0,
@@ -73,6 +108,8 @@ DEFAULT_CLI_VALUES = {
     'hand_generation': 'none',
     'post_process': 'ask',
     'rpi_port': '',
+    'rpi_event_host': '0.0.0.0',
+    'rpi_event_port': 60701,
     'sdk_script': '',
     'feedback_port': '',
     'hand_ip': '127.0.0.1',
@@ -165,6 +202,10 @@ def build_arg_parser(defaults=None, config_path=DEFAULT_ONLINE_CONFIG):
                           help='what to do after online collection finishes')
     pipeline.add_argument('--rpi-port', type=str, default=defaults['rpi_port'],
                           help='reserved for future RPi serial command input; currently left blank')
+    pipeline.add_argument('--rpi-event-host', type=str, default=defaults['rpi_event_host'],
+                          help='local host/IP for RPi hand event UDP logging')
+    pipeline.add_argument('--rpi-event-port', type=int, default=defaults['rpi_event_port'],
+                          help='UDP port for RPi hand event logging; <=0 disables the listener')
     pipeline.add_argument('--sdk-script', type=str, default=defaults['sdk_script'],
                           help='reserved for future dexterous-hand SDK command bridge; currently left blank')
     pipeline.add_argument('--feedback-port', type=str, default=defaults['feedback_port'],
@@ -344,11 +385,17 @@ class SessionManager(object):
         self.hand_last_command = ''
         self.hand_last_t_sec = float('nan')
         self.hand_total_commands = 0
+        self.hand_log_lock = threading.Lock()
         self.hand_digit_buffer = ''
         self.hand_digit_last_wall = 0.0
         self.hand_digit_timeout_s = 0.65
         self.hand_ui_regions = []
         self.hand_click_gesture = None
+        self.rpi_event_thread = None
+        self.rpi_event_stop = threading.Event()
+        self.rpi_event_socket = None
+        self.rpi_event_count = 0
+        self.rpi_event_warning_count = 0
         self.preview_backend = None
         self.window_name = 'DexHand HighFps Capture'
         self._closed = False
@@ -385,6 +432,7 @@ class SessionManager(object):
                      % (args.task_name, self.planned_trials if self.planned_trials > 0 else 'unlimited', args.hand_generation))
         if args.rpi_port or args.sdk_script or args.feedback_port:
             console.warning('RPi command bridge, SDK forwarding, and hand feedback logging are placeholders for now.')
+        self._start_rpi_event_listener()
         console.info('hand pose hotkeys enabled via socket target %s:%d'
                      % (args.hand_ip, int(args.hand_port)))
 
@@ -544,50 +592,176 @@ class SessionManager(object):
     def _log_hand_command(self, wall_time_sec, trial_time_sec, action, command, status, message):
         t_sec = wall_time_sec - self.t0
 
-        if self.hand_cmd_writer is not None:
-            self.hand_cmd_writer.writerow([
-                '%.6f' % t_sec,
-                '%.6f' % wall_time_sec,
-                '%.6f' % trial_time_sec,
-                action,
-                command,
-                status,
-                message,
-            ])
-        if self.hand_sdk_cmd_writer is not None:
-            self.hand_sdk_cmd_writer.writerow([
-                '%.6f' % t_sec,
-                '%.6f' % wall_time_sec,
-                '%.6f' % trial_time_sec,
-                action,
-                command,
-                status,
-                message,
-            ])
-        if self.hand_task_cmd_writer is not None:
-            self.hand_task_cmd_writer.writerow([
-                '%.6f' % t_sec,
-                '%.6f' % wall_time_sec,
-                self.trial_id if self.recording else 0,
-                '%.6f' % trial_time_sec,
-                action,
-                command,
-                status,
-                message,
-                int(bool(self.recording)),
-            ])
+        with self.hand_log_lock:
+            if self.hand_sdk_cmd_writer is not None:
+                self.hand_sdk_cmd_writer.writerow([
+                    '%.6f' % t_sec,
+                    '%.6f' % wall_time_sec,
+                    '%.6f' % trial_time_sec,
+                    action,
+                    command,
+                    status,
+                    message,
+                ])
+            if self.hand_task_cmd_writer is not None:
+                self.hand_task_cmd_writer.writerow([
+                    '%.6f' % t_sec,
+                    '%.6f' % wall_time_sec,
+                    self.trial_id if self.recording else 0,
+                    '%.6f' % trial_time_sec,
+                    action,
+                    command,
+                    status,
+                    message,
+                    int(bool(self.recording)),
+                ])
 
-        self.hand_last_action = action
-        self.hand_last_command = command
-        self.hand_last_t_sec = t_sec
-        self.hand_total_commands += 1
+            self.hand_last_action = action
+            self.hand_last_command = command
+            self.hand_last_t_sec = t_sec
+            self.hand_total_commands += 1
 
-        if self.hand_cmd_file is not None:
-            self.hand_cmd_file.flush()
-        if self.hand_sdk_cmd_file is not None:
-            self.hand_sdk_cmd_file.flush()
-        if self.hand_task_cmd_file is not None:
-            self.hand_task_cmd_file.flush()
+            if self.hand_sdk_cmd_file is not None:
+                self.hand_sdk_cmd_file.flush()
+            if self.hand_task_cmd_file is not None:
+                self.hand_task_cmd_file.flush()
+
+    def _log_rpi_hand_event(self, wall_time_sec, event, addr):
+        if not self.recording or self.trial_start_wall is None:
+            return
+
+        action = str(event.get('action', '')).strip() or 'unknown'
+        command = str(event.get('command', '')).strip()
+        status = str(event.get('status', 'ok')).strip() or 'ok'
+        message = str(event.get('message', '')).strip()
+        remote_wall = event.get('wall_time')
+        remote_mono = event.get('monotonic')
+        details = ['source=%s:%d' % (addr[0], int(addr[1]))]
+        if remote_wall is not None:
+            details.append('rpi_wall=%s' % remote_wall)
+        if remote_mono is not None:
+            details.append('rpi_monotonic=%s' % remote_mono)
+        if message:
+            details.append(message)
+        message = '; '.join(details)
+
+        positions = event.get('positions') or {}
+        angles = event.get('angles') or {}
+        readings = event.get('readings') or {}
+        t_sec = wall_time_sec - self.t0
+        trial_time_sec = wall_time_sec - self.trial_start_wall
+        source = '%s:%d' % (addr[0], int(addr[1]))
+
+        with self.hand_log_lock:
+            if self.hand_cmd_writer is not None:
+                row = [
+                    '%.6f' % t_sec,
+                    '%.6f' % wall_time_sec,
+                    '%.6f' % trial_time_sec,
+                    action,
+                    status,
+                    source,
+                    _csv_value(remote_wall),
+                    _csv_value(remote_mono),
+                ]
+                row.extend(_csv_value(_event_channel_value(positions, i)) for i in range(1, 6))
+                row.extend(_csv_value(_event_channel_value(angles, i)) for i in range(1, 6))
+                row.extend(_csv_value(_event_channel_value(readings, i, 'duty')) for i in range(1, 6))
+                row.extend(_csv_value(_event_channel_value(readings, i, 'pulse_width_us'), precision=0)
+                           for i in range(1, 6))
+                row.extend(_csv_value(_event_channel_value(readings, i, 'period_us'), precision=0)
+                           for i in range(1, 6))
+                row.append(message)
+                self.hand_cmd_writer.writerow(row)
+                self.hand_cmd_file.flush()
+            if self.hand_sdk_cmd_writer is not None:
+                self.hand_sdk_cmd_writer.writerow([
+                    '%.6f' % t_sec,
+                    '%.6f' % wall_time_sec,
+                    '%.6f' % trial_time_sec,
+                    action,
+                    command,
+                    status,
+                    message,
+                ])
+                self.hand_sdk_cmd_file.flush()
+            if self.hand_task_cmd_writer is not None:
+                self.hand_task_cmd_writer.writerow([
+                    '%.6f' % t_sec,
+                    '%.6f' % wall_time_sec,
+                    self.trial_id if self.recording else 0,
+                    '%.6f' % trial_time_sec,
+                    action,
+                    command,
+                    status,
+                    message,
+                    int(bool(self.recording)),
+                ])
+                self.hand_task_cmd_file.flush()
+            self.hand_last_action = action
+            self.hand_last_command = command
+            self.hand_last_t_sec = t_sec
+            self.hand_total_commands += 1
+            self.rpi_event_count += 1
+
+    def _run_rpi_event_listener(self):
+        while not self.rpi_event_stop.is_set():
+            try:
+                data, addr = self.rpi_event_socket.recvfrom(4096)
+                wall_time_sec = time.time()
+            except socket.timeout:
+                continue
+            except OSError:
+                if not self.rpi_event_stop.is_set():
+                    console.warning('RPi event listener socket error')
+                break
+
+            try:
+                event = json.loads(data.decode('utf-8'))
+                if not isinstance(event, dict):
+                    raise ValueError('event payload is not a JSON object')
+                self._log_rpi_hand_event(wall_time_sec, event, addr)
+            except Exception as exc:
+                self.rpi_event_warning_count += 1
+                if self.rpi_event_warning_count <= 3:
+                    console.warning('bad RPi event from %s:%d: %s' % (addr[0], int(addr[1]), str(exc)))
+
+    def _start_rpi_event_listener(self):
+        port = int(getattr(self.args, 'rpi_event_port', 0))
+        if port <= 0:
+            console.info('RPi hand event UDP logging disabled.')
+            return
+        if self.rpi_event_thread is not None:
+            return
+
+        host = getattr(self.args, 'rpi_event_host', '0.0.0.0') or '0.0.0.0'
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(0.2)
+            sock.bind((host, port))
+        except OSError as exc:
+            sock.close()
+            console.warning('RPi hand event UDP logging disabled (%s:%d bind failed: %s)' % (host, port, str(exc)))
+            return
+        self.rpi_event_socket = sock
+        self.rpi_event_stop.clear()
+        self.rpi_event_thread = threading.Thread(target=self._run_rpi_event_listener, daemon=True)
+        self.rpi_event_thread.start()
+        console.success('RPi hand event UDP logging: %s:%d -> trial hand/rpi_commands.csv' % (host, port))
+
+    def _stop_rpi_event_listener(self):
+        if self.rpi_event_thread is None:
+            return
+        self.rpi_event_stop.set()
+        if self.rpi_event_socket is not None:
+            try:
+                self.rpi_event_socket.close()
+            except Exception:
+                pass
+            self.rpi_event_socket = None
+        self.rpi_event_thread.join(timeout=1.0)
+        self.rpi_event_thread = None
 
     def _send_hand_gesture(self, gesture_id):
         pose_name = GESTURE_ID_TO_POSE.get(int(gesture_id), 'unknown')
@@ -731,12 +905,12 @@ class SessionManager(object):
         hand_log_path = os.path.join(trial_dir, 'hand', 'rpi_commands.csv')
         self.hand_cmd_file = open(hand_log_path, 'w', newline='', encoding='utf-8')
         self.hand_cmd_writer = csv.writer(self.hand_cmd_file)
-        self.hand_cmd_writer.writerow(['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message'])
+        self.hand_cmd_writer.writerow(RPI_ENCODER_LOG_HEADER)
 
         sdk_log_path = os.path.join(trial_dir, 'hand', 'sdk_commands.csv')
         self.hand_sdk_cmd_file = open(sdk_log_path, 'w', newline='', encoding='utf-8')
         self.hand_sdk_cmd_writer = csv.writer(self.hand_sdk_cmd_file)
-        self.hand_sdk_cmd_writer.writerow(['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message'])
+        self.hand_sdk_cmd_writer.writerow(HAND_COMMAND_LOG_HEADER)
 
         self.active_sinks = []
         self.trial_start_wall = time.time()
@@ -772,6 +946,7 @@ class SessionManager(object):
             ('start_wall_time', self.trial_start_wall),
             ('hand_generation', args.hand_generation),
             ('rpi_sdk_feedback_status', 'partial_cli_socket'),
+            ('rpi_event_udp', {'host': args.rpi_event_host, 'port': args.rpi_event_port}),
             ('rpi_commands_log', hand_log_path),
             ('sdk_commands_log', os.path.join('hand', 'sdk_commands.csv')),
             ('hand_feedback_log', ''),
@@ -802,17 +977,18 @@ class SessionManager(object):
             self.ts_csv_file = None
             self.ts_csv_writer = None
 
-        if self.hand_cmd_file is not None:
-            self.hand_cmd_file.flush()
-            self.hand_cmd_file.close()
-            self.hand_cmd_file = None
-            self.hand_cmd_writer = None
+        with self.hand_log_lock:
+            if self.hand_cmd_file is not None:
+                self.hand_cmd_file.flush()
+                self.hand_cmd_file.close()
+                self.hand_cmd_file = None
+                self.hand_cmd_writer = None
 
-        if self.hand_sdk_cmd_file is not None:
-            self.hand_sdk_cmd_file.flush()
-            self.hand_sdk_cmd_file.close()
-            self.hand_sdk_cmd_file = None
-            self.hand_sdk_cmd_writer = None
+            if self.hand_sdk_cmd_file is not None:
+                self.hand_sdk_cmd_file.flush()
+                self.hand_sdk_cmd_file.close()
+                self.hand_sdk_cmd_file = None
+                self.hand_sdk_cmd_writer = None
 
         self.recording = False
         stop_wall = time.time()
@@ -826,6 +1002,7 @@ class SessionManager(object):
                 ('duration_sec', stop_wall - self.trial_start_wall if self.trial_start_wall is not None else 0.0),
                 ('hand_generation', self.args.hand_generation),
                 ('rpi_sdk_feedback_status', 'partial_cli_socket'),
+                ('rpi_event_udp', {'host': self.args.rpi_event_host, 'port': self.args.rpi_event_port}),
                 ('rpi_commands_log', os.path.join('hand', 'rpi_commands.csv')),
                 ('sdk_commands_log', os.path.join('hand', 'sdk_commands.csv')),
                 ('hand_feedback_log', ''),
@@ -1223,6 +1400,8 @@ class SessionManager(object):
                 except Exception as e:
                     console.warning('[cleanup] error closing sink: %s' % e)
             self.active_sinks = []
+
+        self._stop_rpi_event_listener()
 
         # Stop camera capture threads
         if self.trigger_thread is not None:

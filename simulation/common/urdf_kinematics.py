@@ -122,6 +122,8 @@ class SerialChain:
         self.active_indices = [i for i, joint in enumerate(self.joints) if joint.name in self.active_joint_names]
         self.lowers = np.array([self.joints[i].lower for i in self.active_indices], dtype=np.float64)
         self.uppers = np.array([self.joints[i].upper for i in self.active_indices], dtype=np.float64)
+        self.fixed_transforms = [transform_matrix(joint.xyz, joint.rpy) for joint in self.joints]
+        self.active_columns = {joint_index: col for col, joint_index in enumerate(self.active_indices)}
 
     def fk(self, q: Sequence[float]) -> np.ndarray:
         q_arr = np.asarray(q, dtype=np.float64).reshape(len(self.active_indices))
@@ -147,6 +149,60 @@ class SerialChain:
         rot_err = rotation_matrix_to_rotvec(target[:3, :3] @ current[:3, :3].T)
         return np.concatenate([pos_err, rot_err * float(orientation_weight)])
 
+    def fk_and_error_jacobian(self, q: Sequence[float], target: np.ndarray, orientation_weight: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        q_arr = np.asarray(q, dtype=np.float64).reshape(len(self.active_indices))
+        transform = np.eye(4, dtype=np.float64)
+        joint_origins: Dict[int, np.ndarray] = {}
+        joint_axes: Dict[int, np.ndarray] = {}
+        joint_types: Dict[int, str] = {}
+        for joint_index, joint in enumerate(self.joints):
+            transform = transform @ self.fixed_transforms[joint_index]
+            column = self.active_columns.get(joint_index)
+            joint_value = q_arr[column] if column is not None else 0.0
+            if joint.joint_type in {"revolute", "continuous"}:
+                if column is not None:
+                    joint_origins[joint_index] = transform[:3, 3].copy()
+                    joint_axes[joint_index] = transform[:3, :3] @ joint.axis
+                    joint_types[joint_index] = joint.joint_type
+                motion = np.eye(4, dtype=np.float64)
+                motion[:3, :3] = axis_angle_to_matrix(joint.axis, joint_value)
+                transform = transform @ motion
+            elif joint.joint_type == "prismatic":
+                if column is not None:
+                    joint_origins[joint_index] = transform[:3, 3].copy()
+                    joint_axes[joint_index] = transform[:3, :3] @ joint.axis
+                    joint_types[joint_index] = joint.joint_type
+                motion = np.eye(4, dtype=np.float64)
+                motion[:3, 3] = joint.axis * joint_value
+                transform = transform @ motion
+
+        pos_err = target[:3, 3] - transform[:3, 3]
+        if orientation_weight <= 0.0:
+            jac = np.zeros((3, q_arr.size), dtype=np.float64)
+        else:
+            rot_err = rotation_matrix_to_rotvec(target[:3, :3] @ transform[:3, :3].T)
+            jac = np.zeros((6, q_arr.size), dtype=np.float64)
+        tip_pos = transform[:3, 3]
+        for joint_index, column in self.active_columns.items():
+            axis = joint_axes[joint_index]
+            norm = float(np.linalg.norm(axis))
+            if norm > 1e-12:
+                axis = axis / norm
+            if joint_types[joint_index] == "prismatic":
+                pos_jac = axis
+                rot_jac = np.zeros(3, dtype=np.float64)
+            else:
+                pos_jac = np.cross(axis, tip_pos - joint_origins[joint_index])
+                rot_jac = axis
+            jac[:3, column] = -pos_jac
+            if orientation_weight > 0.0:
+                jac[3:, column] = -rot_jac * float(orientation_weight)
+        if orientation_weight <= 0.0:
+            err = pos_err
+        else:
+            err = np.concatenate([pos_err, rot_err * float(orientation_weight)])
+        return transform, err, jac
+
     def numerical_jacobian(self, q: np.ndarray, target: np.ndarray, orientation_weight: float, eps: float = 1e-5) -> np.ndarray:
         base_err = self.pose_error(q, target, orientation_weight)
         jac = np.zeros((base_err.size, q.size), dtype=np.float64)
@@ -171,13 +227,11 @@ class SerialChain:
         pos_error = float("inf")
         rot_error = 0.0
         for iteration in range(int(max_iters)):
-            current = self.fk(q)
+            current, err, jac = self.fk_and_error_jacobian(q, target, orientation_weight)
             pos_error = float(np.linalg.norm(target[:3, 3] - current[:3, 3]))
             rot_error = float(np.linalg.norm(rotation_matrix_to_rotvec(target[:3, :3] @ current[:3, :3].T)))
             if pos_error <= tolerance and (orientation_weight <= 0.0 or rot_error <= 0.15):
                 return q, True, pos_error, rot_error, iteration
-            err = self.pose_error(q, target, orientation_weight)
-            jac = self.numerical_jacobian(q, target, orientation_weight)
             lhs = jac @ jac.T + (float(damping) ** 2) * np.eye(jac.shape[0], dtype=np.float64)
             try:
                 dq = -jac.T @ np.linalg.solve(lhs, err)

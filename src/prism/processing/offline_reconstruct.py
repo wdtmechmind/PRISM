@@ -523,10 +523,46 @@ def _resolve_calib_json(task_dir, calib_json, config_path):
     raise RuntimeError('could not resolve calibration json; pass --calib-json explicitly')
 
 
+def _write_quality_report(trial_dir, traj_path, rigid_path=None,
+                          write_json=False,
+                          static_t0=None, static_t1=None,
+                          static_min_frames=20, static_max_range_mm=3.0):
+    """Write trajectory quality reports beside reconstruction CSV outputs."""
+    if not traj_path or not os.path.isfile(traj_path):
+        console.warning('quality report skipped for %s (trajectory_led.csv missing)'
+                        % os.path.basename(trial_dir))
+        return
+
+    traj_dir = os.path.dirname(traj_path)
+    md_path = os.path.join(traj_dir, 'accuracy_report.md')
+
+    try:
+        from prism.processing.led_accuracy import print_accuracy_report
+        result = print_accuracy_report(
+            traj_path,
+            rigid_path=rigid_path if (rigid_path and os.path.isfile(rigid_path)) else None,
+            static_t0=static_t0,
+            static_t1=static_t1,
+            static_min_frames=static_min_frames,
+            static_max_range_mm=static_max_range_mm,
+            md_path=md_path,
+        )
+        if write_json and result:
+            json_path = os.path.join(traj_dir, 'accuracy_report.json')
+            with open(json_path, 'w', encoding='utf-8') as handle:
+                json.dump(result, handle, ensure_ascii=False, indent=2)
+            console.saved('精度报告 (json): %s' % json_path)
+    except Exception as exc:
+        console.warning('quality report failed for %s: %s' % (os.path.basename(trial_dir), exc))
+
+
 def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backend=None,
                      yolo_weights=None, yolo_conf=None, yolo_iou=None, yolo_imgsz=None,
                      tol_ms=8.0,
-                     smooth_window=5, smooth_max_gap=3, despike_window=3):
+                     smooth_window=5, smooth_max_gap=3, despike_window=3,
+                     quality_report=True, quality_write_json=False,
+                     quality_static_t0=None, quality_static_t1=None,
+                     quality_static_min_frames=20, quality_static_max_range_mm=3.0):
     """Reconstruct every trial under a task directory."""
     task_dir = os.path.abspath(os.path.expanduser(task_dir))
     if not os.path.isdir(task_dir):
@@ -593,6 +629,17 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backe
         traj_path, rigid_path = reconstruct_trial(
             trial_dir, cameras, detector, max_reproj, tol_s,
             smooth_window=smooth_window, smooth_max_gap=smooth_max_gap, despike_window=despike_window)
+        if quality_report and traj_path:
+            _write_quality_report(
+                trial_dir,
+                traj_path,
+                rigid_path=rigid_path,
+                write_json=quality_write_json,
+                static_t0=quality_static_t0,
+                static_t1=quality_static_t1,
+                static_min_frames=quality_static_min_frames,
+                static_max_range_mm=quality_static_max_range_mm,
+            )
 
     console.done('offline reconstruction complete: %s' % task_dir)
 
@@ -624,6 +671,18 @@ def main(argv=None):
                         help='median-filter window (frames) to remove single-frame outliers; 1 disables')
     parser.add_argument('--smooth-max-gap', type=int, default=3,
                         help='max missing-frame gap bridged by interpolation before a track is split')
+    parser.add_argument('--no-quality-report', action='store_true',
+                        help='disable automatic trajectory quality report generation after each trial')
+    parser.add_argument('--quality-write-json', action='store_true',
+                        help='also write accuracy_report.json beside accuracy_report.md')
+    parser.add_argument('--quality-static-t0', type=float, default=None,
+                        help='manual static-window start time (seconds) for quality evaluation')
+    parser.add_argument('--quality-static-t1', type=float, default=None,
+                        help='manual static-window end time (seconds) for quality evaluation')
+    parser.add_argument('--quality-static-min-frames', type=int, default=20,
+                        help='minimum frames for auto static-window detection in quality evaluation')
+    parser.add_argument('--quality-static-max-range-mm', type=float, default=3.0,
+                        help='maximum centroid motion range for auto static-window detection in quality evaluation')
     args = parser.parse_args(argv)
 
     reconstruct_task(args.task_dir, calib_json=args.calib_json,
@@ -632,7 +691,13 @@ def main(argv=None):
                      yolo_iou=args.yolo_iou, yolo_imgsz=args.yolo_imgsz,
                      tol_ms=args.tol_ms,
                      smooth_window=args.smooth_window, smooth_max_gap=args.smooth_max_gap,
-                     despike_window=args.despike_window)
+                     despike_window=args.despike_window,
+                     quality_report=not args.no_quality_report,
+                     quality_write_json=args.quality_write_json,
+                     quality_static_t0=args.quality_static_t0,
+                     quality_static_t1=args.quality_static_t1,
+                     quality_static_min_frames=args.quality_static_min_frames,
+                     quality_static_max_range_mm=args.quality_static_max_range_mm)
 
 
 if __name__ == '__main__':

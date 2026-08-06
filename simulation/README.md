@@ -21,10 +21,12 @@ data/processed/simulation/<task_dir>/<trial_dir>/
 ```
 
 The final video defaults to `planned_motion_overhead.mp4` next to
-`planned_motion.csv`. Use `--video-path`, `--camera-pos`, `--camera-look-at`,
-`--stride`, `--max-frames`, `--replay-stride`, or `--replay-max-frames` to tune
-the run. Use `--dry-run` to print the underlying stage commands without running
-them.
+`planned_motion.csv`. The default robot config enables orientation-aware IK for
+the AUBO arm, so wrist joints are used to follow both corrected-frame position
+and orientation. Use `--no-use-orientation` for faster position-only previews,
+or `--orientation-weight`, `--max-iters`, `--tolerance`, `--stride`,
+`--max-frames`, `--replay-stride`, or `--replay-max-frames` to tune the run. Use
+`--dry-run` to print the underlying stage commands without running them.
 
 ## Stage 1: Correct Raw Trajectory
 
@@ -134,9 +136,11 @@ Solve AUBO arm IK and expand MechHand gestures into per-frame joint targets:
 ```
 
 The default output is `planned_motion.csv` next to the corrected trajectory.
-By default the planner follows corrected-frame position targets. Add
-`--use-orientation` for stricter pose IK, and use `--max-frames N` for quick
-smoke tests.
+By default the planner reads `planning.use_orientation` from
+`simulation/configs/aubo_i5_mechhand.yaml`, which enables stricter pose IK in the
+default config. Use `--no-use-orientation` for faster position-only previews, or
+`--use-orientation` to force pose IK when another robot config disables it. Use
+`--max-frames N` and `--stride N` for quick smoke tests.
 
 ## Stage 4: Replay Planned Motion
 

@@ -12,6 +12,8 @@ output_dir: data/raw
 hand_generation: none
 post_process: ask
 rpi_port: ''
+rpi_event_host: 0.0.0.0
+rpi_event_port: 60701
 sdk_script: ''
 feedback_port: ''
 hand_ip: 127.0.0.1
@@ -82,8 +84,8 @@ g_v_high: 255
 
 min_area: 10.0
 max_norm_reproj_error: 0.015
-detector_backend: hsv
-yolo_weights: ''
+detector_backend: yolo
+yolo_weights: /home/daotan/runs/detect/runs/detect/prism_led_yolo/weights/best.pt
 yolo_conf: 0.25
 yolo_iou: 0.45
 yolo_imgsz: 640

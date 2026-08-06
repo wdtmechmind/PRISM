@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1780" viewBox="0 0 1200 1780" role="img" aria-labelledby="title desc">
+  <title id="title">PRISM data transfer pipeline</title>
+  <desc id="desc">Blue and white block diagram showing data transfer from cameras and hand state to episode dataset, reconstruction, quality checks, simulation replay, policy training, and robot deployment.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fbff; }
+      .box { fill: #ffffff; stroke: #0b2a67; stroke-width: 5; }
+      .side-box { fill: #ffffff; stroke: #0b2a67; stroke-width: 4; stroke-dasharray: 10 8; }
+      .line { fill: none; stroke: #0b2a67; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .thin { fill: none; stroke: #0b2a67; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+      .fill-blue { fill: #0b2a67; }
+      .text-main { fill: #12223f; font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 32px; font-weight: 700; }
+      .text-sub { fill: #334563; font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 22px; font-weight: 500; }
+      .text-small { fill: #44536d; font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 18px; font-weight: 500; }
+      .code { fill: #0b2a67; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 18px; font-weight: 600; }
+      .plus { fill: #0b2a67; font-family: "Aptos", "Segoe UI", Arial, sans-serif; font-size: 70px; font-weight: 700; }
+    </style>
+    <marker id="arrow" markerWidth="16" markerHeight="16" refX="13" refY="8" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L14,8 L2,14 Z" fill="#0b2a67" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="1780" />
+
+  <!-- Top inputs -->
+  <rect class="box" x="80" y="70" width="390" height="180" rx="18" />
+  <g transform="translate(120,108)">
+    <rect class="thin" x="18" y="40" width="78" height="58" rx="10" />
+    <rect class="fill-blue" x="42" y="26" width="30" height="18" rx="4" />
+    <circle class="thin" cx="57" cy="69" r="18" />
+    <rect class="thin" x="5" y="98" width="58" height="44" rx="8" />
+    <circle class="thin" cx="34" cy="120" r="12" />
+    <rect class="thin" x="86" y="100" width="58" height="44" rx="8" />
+    <circle class="thin" cx="115" cy="122" r="12" />
+  </g>
+  <text class="text-main" x="260" y="128">Multi-view</text>
+  <text class="text-main" x="260" y="168">Cameras</text>
+  <text class="text-sub" x="260" y="205">4 HIK + RealSense</text>
+  <text class="code" x="260" y="232">devices/cameras</text>
+
+  <text class="plus" x="560" y="180">+</text>
+
+  <rect class="box" x="730" y="70" width="390" height="180" rx="18" />
+  <g transform="translate(770,108)">
+    <rect class="thin" x="15" y="18" width="76" height="52" rx="10" />
+    <circle class="fill-blue" cx="39" cy="44" r="6" />
+    <circle class="fill-blue" cx="67" cy="44" r="6" />
+    <path class="thin" d="M4 120 C34 84, 62 92, 82 110" />
+    <path class="thin" d="M28 118 L78 136 L125 112" />
+    <path class="thin" d="M70 101 L98 84 L110 96 L82 116" />
+  </g>
+  <text class="text-main" x="910" y="128">Hand State</text>
+  <text class="text-sub" x="910" y="168">Encoders / RPi</text>
+  <text class="text-sub" x="910" y="198">DexHand commands</text>
+  <text class="code" x="910" y="232">devices/hand + rpi</text>
+
+  <!-- Merge arrows -->
+  <path class="line" marker-end="url(#arrow)" d="M275 250 L275 330 L520 330 L520 410" />
+  <path class="line" marker-end="url(#arrow)" d="M925 250 L925 330 L680 330 L680 410" />
+
+  <!-- Acquisition runtime -->
+  <rect class="box" x="330" y="410" width="540" height="185" rx="18" />
+  <g transform="translate(378,452)">
+    <rect class="thin" x="8" y="10" width="76" height="104" rx="10" />
+    <path class="thin" d="M25 35 L67 35 M25 58 L67 58 M25 81 L53 81" />
+    <circle class="fill-blue" cx="102" cy="82" r="32" />
+    <path d="M93 64 L93 100 L119 82 Z" fill="#ffffff" />
+  </g>
+  <text class="text-main" x="520" y="465">Online Acquisition</text>
+  <text class="text-sub" x="520" y="505">triggered capture + live preview</text>
+  <text class="code" x="520" y="545">prism-collect</text>
+  <text class="code" x="520" y="572">online/session_manager.py</text>
+
+  <!-- Config side input -->
+  <rect class="side-box" x="55" y="430" width="230" height="140" rx="16" />
+  <text class="text-sub" x="92" y="478">Calibration</text>
+  <text class="text-small" x="92" y="510">ChArUco JSON</text>
+  <text class="text-small" x="92" y="538">YAML config</text>
+  <path class="thin" marker-end="url(#arrow)" d="M285 500 L330 500" />
+
+  <!-- Dataset -->
+  <path class="line" marker-end="url(#arrow)" d="M600 595 L600 700" />
+  <rect class="box" x="260" y="700" width="680" height="205" rx="18" />
+  <g transform="translate(315,743)">
+    <path class="thin" d="M0 28 H35 L48 44 H126 V118 H0 Z" />
+    <ellipse class="thin" cx="150" cy="50" rx="31" ry="11" />
+    <path class="thin" d="M119 50 V104 C119 110,133 116,150 116 C167 116,181 110,181 104 V50" />
+    <path class="thin" d="M119 76 C119 82,133 88,150 88 C167 88,181 82,181 76" />
+  </g>
+  <text class="text-main" x="540" y="760">Episode Dataset</text>
+  <text class="text-sub" x="540" y="800">task / trial folders</text>
+  <text class="text-small" x="540" y="835">MP4 videos + timestamps + metadata</text>
+  <text class="text-small" x="540" y="862">hand logs + camera calibration references</text>
+  <text class="code" x="540" y="890">recording/video_recorder.py</text>
+
+  <!-- Offline reconstruction -->
+  <path class="line" marker-end="url(#arrow)" d="M600 905 L600 1015" />
+  <rect class="box" x="260" y="1015" width="680" height="210" rx="18" />
+  <g transform="translate(322,1058)">
+    <circle class="thin" cx="60" cy="60" r="46" />
+    <circle class="fill-blue" cx="30" cy="46" r="8" />
+    <circle class="fill-blue" cx="64" cy="26" r="8" />
+    <circle class="fill-blue" cx="94" cy="62" r="8" />
+    <circle class="fill-blue" cx="48" cy="92" r="8" />
+    <path class="thin" d="M30 46 L64 26 L94 62 L48 92 Z M30 46 L48 92 M64 26 L48 92" />
+  </g>
+  <text class="text-main" x="540" y="1078">Vision Reconstruction</text>
+  <text class="text-sub" x="540" y="1118">HSV / YOLO / Hybrid LED detection</text>
+  <text class="text-small" x="540" y="1152">multi-view triangulation -> 3D LEDs</text>
+  <text class="text-small" x="540" y="1178">SVD rigid-body fit -> 6D pose CSV</text>
+  <text class="code" x="540" y="1208">prism-reconstruct-trials</text>
+
+  <!-- Quality checks -->
+  <path class="line" marker-end="url(#arrow)" d="M600 1225 L600 1330" />
+  <rect class="box" x="260" y="1330" width="680" height="205" rx="18" />
+  <g transform="translate(330,1373)">
+    <rect class="thin" x="0" y="0" width="92" height="118" rx="10" />
+    <path class="thin" d="M22 30 L38 45 L68 18" />
+    <path class="thin" d="M24 72 L36 84 L67 55" />
+    <circle class="fill-blue" cx="112" cy="88" r="30" />
+    <path d="M104 70 L104 106 L130 88 Z" fill="#ffffff" />
+  </g>
+  <text class="text-main" x="540" y="1390">Sync / Quality / Replay Check</text>
+  <text class="text-sub" x="540" y="1430">coverage, reprojection, jitter, drift</text>
+  <text class="text-small" x="540" y="1465">trajectory plots + accuracy_report.md</text>
+  <text class="code" x="540" y="1498">trajectory_analyzer.py + led_accuracy.py</text>
+
+  <!-- Outputs branching -->
+  <path class="line" d="M600 1535 L600 1590" />
+  <path class="line" marker-end="url(#arrow)" d="M600 1590 L250 1590 L250 1618" />
+  <path class="line" marker-end="url(#arrow)" d="M600 1590 L600 1618" />
+  <path class="line" marker-end="url(#arrow)" d="M600 1590 L950 1590 L950 1618" />
+
+  <!-- Bottom mini outputs, partly above bottom edge but visible -->
+  <rect class="box" x="75" y="1618" width="350" height="120" rx="18" />
+  <text class="text-main" x="160" y="1672">Policy Training</text>
+  <text class="text-small" x="160" y="1706">episode trajectories + states</text>
+  <g transform="translate(112,1650) scale(0.55)">
+    <circle class="fill-blue" cx="40" cy="20" r="8" />
+    <circle class="fill-blue" cx="16" cy="58" r="8" />
+    <circle class="fill-blue" cx="66" cy="58" r="8" />
+    <circle class="fill-blue" cx="40" cy="96" r="8" />
+    <path class="thin" d="M40 20 L16 58 L40 96 L66 58 Z M40 20 L66 58 M16 58 L66 58" />
+  </g>
+
+  <rect class="box" x="425" y="1618" width="350" height="120" rx="18" />
+  <text class="text-main" x="502" y="1672">Isaac Sim Replay</text>
+  <text class="text-small" x="502" y="1706">corrected frame + IK motion</text>
+  <g transform="translate(462,1653) scale(0.55)">
+    <circle class="thin" cx="24" cy="88" r="16" />
+    <circle class="thin" cx="88" cy="24" r="16" />
+    <path class="thin" d="M36 76 L76 36 M19 102 L6 128 H82 M74 26 L118 56 L104 84" />
+  </g>
+
+  <rect class="box" x="775" y="1618" width="350" height="120" rx="18" />
+  <text class="text-main" x="858" y="1672">Robot Deployment</text>
+  <text class="text-small" x="858" y="1706">planned_motion.csv</text>
+  <g transform="translate(812,1650) scale(0.55)">
+    <path class="thin" d="M16 126 H94 M28 126 L40 74 L78 38 L110 70" />
+    <circle class="thin" cx="40" cy="74" r="13" />
+    <circle class="thin" cx="78" cy="38" r="13" />
+    <circle class="thin" cx="110" cy="70" r="13" />
+  </g>
+
+</svg>
