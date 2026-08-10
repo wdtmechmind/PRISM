@@ -49,6 +49,7 @@ DEFAULT_INDEX_PRESS_MAX = float(os.environ.get('PRISM_INDEX_PRESS_MAX', '0.6'))
 DEFAULT_STABLE_TIME_S = float(os.environ.get('PRISM_HAND_STABLE_TIME_S', '0.12'))
 DEFAULT_COOLDOWN_S = float(os.environ.get('PRISM_HAND_COOLDOWN_S', '0.2'))
 DEFAULT_INDEX_CLICK_WINDOW_S = float(os.environ.get('PRISM_INDEX_CLICK_WINDOW_S', '0.7'))
+DEFAULT_EVENT_STREAM_HZ = float(os.environ.get('PRISM_RPI_EVENT_STREAM_HZ', '0.0'))
 
 GESTURE_COMMANDS = {
     'five_grasp': '@ROG<0>&',
@@ -529,6 +530,8 @@ def parse_args(argv=None):
                         help='PRISM collector UDP port for event logging; <=0 disables logging')
     parser.add_argument('--disable-event-log', action='store_true',
                         help='send hand commands without UDP event logging')
+    parser.add_argument('--event-stream-hz', type=float, default=DEFAULT_EVENT_STREAM_HZ,
+                        help='continuous UDP telemetry rate in Hz (0 disables; independent from hand trigger)')
     parser.add_argument('--trigger-threshold', type=float, default=None,
                         help='legacy single-threshold mode; if open/closed thresholds are unset, both use this value')
     parser.add_argument('--five-grasp-threshold', type=float, default=None,
@@ -650,9 +653,22 @@ def main(argv=None):
 
     print("Reading encoder angles. Press Ctrl+C to stop.\n")
     print("Debug fields: S=encoder states, C=candidate pose, ST=stable pose, CLK=click event, A=active actions")
+    stream_hz = max(0.0, float(args.event_stream_hz))
+    stream_interval = (1.0 / stream_hz) if stream_hz > 0.0 else 0.0
+    next_stream_time = time.monotonic() + stream_interval if stream_interval > 0.0 else None
+    if stream_interval > 0.0:
+        print("Continuous RPi UDP telemetry enabled: %.2f Hz" % stream_hz)
     try:
         while True:
             angles = get_encoder_angles()
+            if stream_interval > 0.0 and next_stream_time is not None:
+                now_stream = time.monotonic()
+                if now_stream >= next_stream_time:
+                    try:
+                        send_event_log('telemetry', '', status='ok', message='stream')
+                    except Exception:
+                        pass
+                    next_stream_time = now_stream + stream_interval
             try:
                 sent_commands = update_hand_trigger_from_encoders()
                 for sent in sent_commands:

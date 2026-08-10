@@ -1,0 +1,76 @@
+robot:
+  urdf: simulation/support_right/urdf/support_right.urdf
+  prim_path: /World/SupportRightHand
+
+rpi_udp:
+  host: 0.0.0.0
+  port: 60701
+
+# Angle mode (recommended): target = lerp(min_rad, max_rad, norm(angle_deg)).
+# norm(angle_deg) = clamp((angle_deg - source_min_deg)/(source_max_deg-source_min_deg), 0..1)
+channels:
+  "1":
+    joint: joint1
+    source_min_deg: 0.0
+    source_max_deg: 360.0
+    min_rad: -0.55
+    max_rad: 0.55
+    invert: false
+  "2":
+    joint: joint2
+    source_min_deg: 0.0
+    source_max_deg: 360.0
+    min_rad: 0.00
+    max_rad: 1.25
+    invert: false
+  "3":
+    joint: joint6
+    source_min_deg: 0.0
+    source_max_deg: 360.0
+    min_rad: 0.00
+    max_rad: 1.25
+    invert: false
+  "4":
+    joint: joint5
+    source_min_deg: 0.0
+    source_max_deg: 360.0
+    min_rad: 0.00
+    max_rad: 1.25
+    invert: false
+  "5":
+    joint: joint4
+    source_min_deg: 0.0
+    source_max_deg: 360.0
+    min_rad: 0.00
+    max_rad: 1.25
+    invert: false
+
+# Derived joints are coupled from proximal joints.
+mimic:
+  - source_joint: joint2
+    target_joint: joint3
+    ratio: 0.75
+    offset_rad: 0.0
+  - source_joint: joint4
+    target_joint: joint7
+    ratio: 0.70
+    offset_rad: 0.0
+  - source_joint: joint5
+    target_joint: joint8
+    ratio: 0.70
+    offset_rad: 0.0
+  - source_joint: joint6
+    target_joint: joint9
+    ratio: 0.70
+    offset_rad: 0.0
+
+control:
+  input_mode: angle_deg
+  median_window: 5
+  input_deadband_deg: 0.6
+  input_deadband_norm: 0.005
+  smoothing_alpha: 0.35
+  joint_deadband_rad: 0.012
+  max_joint_speed_rad_s: 3.0
+  recv_timeout_sec: 0.002
+  log_rate_hz: 2.0

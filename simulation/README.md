@@ -3,6 +3,88 @@
 This directory contains the staged simulation pipeline that replaces the older
 single-file Isaac Sim replay scripts.
 
+## Stage 0: Simulated Self-Collection (Raw-like)
+
+When no real cameras are connected, generate synthetic task/trial data in a
+layout similar to real collection outputs:
+
+```bash
+python3 simulation/scripts/collect_sim_trial.py \
+  --task-name dexhand_sim \
+  --num-trials 3 \
+  --duration-sec 10 \
+  --fps 30
+```
+
+Default output:
+
+```text
+data/raw/task_<timestamp>_<task_name>/
+  task_metadata.yaml
+  hand_sdk_commands_timeline.csv
+  trial_000001/
+    metadata.yaml
+    trajectory/trajectory_led.csv
+    trajectory/rigid_pose_6d.csv
+    hand/sdk_commands.csv
+    hand/rpi_commands.csv
+```
+
+This collector supports built-in motion patterns (`circle`, `figure8`,
+`lissajous`, `line`), configurable trajectory/noise parameters, and synthetic
+hand gesture events (`--gesture-seq`). Generated CSV headers are aligned with
+the offline reconstruction schema so downstream analysis and correction tools
+can reuse the same readers.
+
+## Stage 0B: Task-Driven Collection (Pick and Place)
+
+Use task semantics (approach, grasp, lift, transfer, release) instead of generic
+curves:
+
+```bash
+python3 simulation/scripts/collect_sim_task.py \
+  --task-type pick_place \
+  --task-name pick_place_sim \
+  --num-trials 3 \
+  --skip-planning
+```
+
+This writes raw-like trial outputs under `data/raw/task_*/trial_*/` and also
+writes task-phase trajectories to:
+
+```text
+data/processed/simulation/<task>/<trial>/
+  corrected_trajectory.csv
+  task_phases.csv
+```
+
+To run planning + Isaac replay execution after generation, use Isaac Python and
+enable replay explicitly:
+
+```bash
+/isaac-sim/python.sh simulation/scripts/collect_sim_task.py \
+  --task-type pick_place \
+  --task-name pick_place_exec \
+  --num-trials 1 \
+  --execute-replay --record-video --headless
+```
+
+If planning fails in a non-Isaac environment, run collection-only mode with
+`--skip-planning` first, then replay later with Isaac Sim.
+
+When `--record-video` is enabled, camera output is written directly into each
+trial camera folder (default camera name `sim_overhead`):
+
+```text
+data/raw/task_*/trial_*/cameras/
+  sim_overhead.mp4
+  sim_overhead_timestamps.csv
+```
+
+By default, replay/video failures are treated as non-fatal warnings so task
+collection files are still kept. Add `--strict-replay` to make replay failure
+abort the run.
+
 ## One-command Replay Video Pipeline
 
 Run corrected-frame conversion, robot motion planning, robot material overrides,
@@ -171,3 +253,72 @@ For command-line validation only:
 
 The replay maps CSV columns to Isaac DOFs by joint name, not by order. The final
 stage is saved to `simulation/scenes/aubo_i5_mechhand_replay.usd`.
+
+## Stage 5: RPi Encoder Teleop for support_right
+
+Drive the third-generation support_right hand directly from RPi encoder UDP events
+(`prism.rpi_hand_event.v1`), with 5-channel mapping to main joints and optional
+distal-joint coupling. Default input mode is direct encoder angle (`angles`).
+
+```bash
+/isaac-sim/python.sh simulation/scripts/teleop_support_right_from_rpi.py \
+  --config simulation/configs/support_right_rpi_5ch.yaml
+```
+
+By default the teleop listener binds `0.0.0.0:60701`, matching the RPi
+`io_interface.py` default event target. You can override at runtime:
+
+```bash
+/isaac-sim/python.sh simulation/scripts/teleop_support_right_from_rpi.py \
+  --config simulation/configs/support_right_rpi_5ch.yaml \
+  --event-host 0.0.0.0 --event-port 60701 --print-dofs
+```
+
+Important: the legacy RPi event log was edge-triggered by SDK pose sends. For
+continuous angle teleop, run RPi `io_interface.py` with telemetry streaming:
+
+```bash
+python3 -m prism.devices.rpi.io_interface --disable-hand-trigger --event-stream-hz 30
+```
+
+This continuously emits UDP packets containing `angles` (Enc1..Enc5) so Isaac
+teleop can follow hand motion in real time, independent of SDK command events.
+
+The teleop config now includes anti-jitter controls for near-static poses:
+
+```yaml
+control:
+  median_window: 5            # per-channel median window
+  input_deadband_deg: 0.6     # ignore tiny encoder changes in angle mode
+  smoothing_alpha: 0.35       # first-order smoothing
+  joint_deadband_rad: 0.012   # ignore tiny output joint changes
+  max_joint_speed_rad_s: 3.0  # slew-rate limit for output joints
+```
+
+Tuning guidance:
+
+- If still shaky at rest: increase `input_deadband_deg` and `joint_deadband_rad`.
+- If response feels too slow: reduce `median_window`/`joint_deadband_rad` or raise
+  `max_joint_speed_rad_s`.
+
+Tune channel-to-joint angle ranges and mimic rules in:
+
+```text
+simulation/configs/support_right_rpi_5ch.yaml
+```
+
+Quick validation (load robot + verify joint names, then exit):
+
+```bash
+/isaac-sim/python.sh simulation/scripts/teleop_support_right_from_rpi.py \
+  --config simulation/configs/support_right_rpi_5ch.yaml \
+  --headless --no-preview --print-dofs
+```
+
+Path convenience: if you pass only a filename like
+`--config support_right_rpi_5ch.yaml`, the script will also try
+`simulation/configs/` automatically.
+
+When Isaac logs many startup warnings, use the script's own markers to judge
+success: `imported articulation`, `dof_count=...`, and
+`robot loaded and mapping validated`.
