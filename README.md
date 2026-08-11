@@ -191,6 +191,15 @@ prism-analyze-trajectory data/raw/task_YYYYmmdd_HHMMSS_task-name --output-dir ./
 
 ## 9. Isaac Sim 仿真流水线
 
+若没有真实相机，也可先生成“接近真实格式”的仿真采集数据：
+
+```bash
+python3 simulation/scripts/collect_sim_trial.py --task-name sim_collect --num-trials 3 --duration-sec 10
+```
+
+这会在 `data/raw/task_*/trial_*/trajectory/` 下生成 `trajectory_led.csv` 和
+`rigid_pose_6d.csv`，并同步生成 `hand/sdk_commands.csv`、`hand/rpi_commands.csv`。
+
 ```bash
 /isaac-sim/python.sh simulation/scripts/run_replay_pipeline.py \
   --trial-dir data/raw/task_YYYYmmdd_HHMMSS_task-name/trial_000001 \

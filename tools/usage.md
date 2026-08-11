@@ -160,6 +160,27 @@ python3 tools/calibrate_hsv_led.py \
 
 ## 3. 重建、评估与轨迹分析
 
+### `plot_rpi_encoder_stream.py`
+
+用途：监听 RPi 通过 UDP 回传的编码器事件（`prism.rpi_hand_event.v1`），实时显示 Enc1..Enc5 角度随时间变化曲线（滚动时间窗）。
+
+典型命令：
+
+```bash
+python3 tools/plot_rpi_encoder_stream.py \
+  --host 0.0.0.0 \
+  --port 60701 \
+  --window-sec 20 \
+  --refresh-ms 50
+```
+
+常用参数：
+
+- `--window-sec`：曲线显示的时间窗长度（秒）
+- `--max-points`：内存环形缓冲最大点数
+- `--refresh-ms`：图刷新间隔（毫秒）
+- `--print-hz`：终端状态打印频率
+
 ### `eval_led_accuracy.py`
 
 用途：评估 LED 三角化和刚体位姿轨迹的自洽精度。

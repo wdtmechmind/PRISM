@@ -1,0 +1,88 @@
+rpi_udp:
+  host: 0.0.0.0
+  port: 60701
+daemon:
+  host: 127.0.0.1
+  port: 60686
+  timeout_s: 1.5
+  speed:
+  - 80
+  - 80
+  - 80
+  - 80
+  - 80
+  force:
+  - 50
+  - 50
+  - 50
+  - 50
+  - 50
+  running_time:
+  - 50
+  - 50
+  - 50
+  - 50
+  - 50
+control:
+  command_rate_hz: 18.0
+  min_send_interval_sec: 0.03
+  idle_timeout_sec: 0.25
+  send_on_change_only: true
+  keepalive_sec: 1.0
+  # Trigger-style send: only send RM when any joint target changes by at least
+  # this amount since the last sent command. 0 means any change triggers send.
+  command_trigger_delta_deg: 6.0
+  input_mode: absolute
+  incremental_wrap_deg: 360.0
+  incremental_deadband_deg: 0.6
+  incremental_max_step_deg: 2.5
+  incremental_jump_guard_deg: 120.0
+  busy_mode: false
+  complete_pos_tol_deg: 2.0
+  complete_vel_tol_deg_s: 3.0
+  complete_stable_sec: 0.25
+  busy_timeout_sec: 3.0
+  append_retry_delay_sec: 0.15
+  device_timeout_retry_delay_sec: 1.2
+  max_consecutive_device_timeouts: 30
+  recv_timeout_sec: 0.01
+  median_window: 5
+  input_deadband_deg: 2.5
+  joint_deadband_deg: 0.45
+  max_joint_speed_deg_s: 180.0
+mapping:
+  J1:
+    source_channel: 1
+    source_min: 45.812049741239434
+    source_max: 295.874957354595
+    target_min_deg: -90.0
+    target_max_deg: 90.0
+    invert: false
+  J2:
+    source_channel: 2
+    source_min: 47.452561798712175
+    source_max: 208.380756701226
+    target_min_deg: -90.0
+    target_max_deg: 90.0
+    invert: false
+  J3:
+    source_channel: 5
+    source_min: 9.143346696350823
+    source_max: 239.97256963720076
+    target_min_deg: -90.0
+    target_max_deg: 90.0
+    invert: false
+  J4:
+    source_channel: 4
+    source_min: 41.16182411812002
+    source_max: 249.72514217619192
+    target_min_deg: -90.0
+    target_max_deg: 90.0
+    invert: false
+  J5:
+    source_channel: 3
+    source_min: 33.35225455507011
+    source_max: 280.0356397244921
+    target_min_deg: -90.0
+    target_max_deg: 90.0
+    invert: false

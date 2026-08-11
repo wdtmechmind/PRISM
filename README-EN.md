@@ -469,6 +469,16 @@ Loads `trajectory_led.csv` and `rigid_pose_6d.csv`, filters to `mode=measured` r
 
 ## 12. Isaac Sim Replay Pipeline
 
+If no physical cameras are available, you can generate raw-like simulated trial
+data first:
+
+```bash
+python3 simulation/scripts/collect_sim_trial.py --task-name sim_collect --num-trials 3 --duration-sec 10
+```
+
+This writes `trajectory_led.csv`, `rigid_pose_6d.csv`, `hand/sdk_commands.csv`,
+and `hand/rpi_commands.csv` under `data/raw/task_*/trial_*/`.
+
 Raw trial trajectories can be converted to the corrected frame, planned for the
 AUBO i5 + MechHand robot, and rendered to an Isaac Sim replay video with one
 pipeline command.
