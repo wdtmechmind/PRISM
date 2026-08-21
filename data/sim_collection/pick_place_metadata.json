@@ -1,0 +1,25 @@
+{
+  "task_name": "pick_place",
+  "base_pick_xyz": [
+    0.0,
+    0.0,
+    -0.9
+  ],
+  "base_place_xyz": [
+    0.2,
+    0.0,
+    -0.9
+  ],
+  "num_trials": 1,
+  "trials_randomized": false,
+  "total_frames": 105,
+  "object_initial": [
+    0.0,
+    0.0,
+    -0.9999999999999999
+  ],
+  "fps": 30.0,
+  "trajectory_duration_sec": 3.466666666666664,
+  "robot_config": "/mnt/projects-8tb/PRISM/simulation/configs/aubo_i5_mechhand.yaml",
+  "timestamp": "2026-08-14 10:59:13"
+}
