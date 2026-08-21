@@ -147,7 +147,7 @@ def _build_hand_panel(width, hand_info=None):
 def draw_preview(hik_latest, rs_latest, observations_by_color, hik_fps, rs_fps,
                  recording, trial_id, elapsed_sec, target_w=480,
                  traj_image=None, hand_info=None, traj_error='', return_ui_meta=False,
-                 composite_target_w=0):
+                 composite_target_w=0, yolo_details=None):
     cells = []
     for i in range(4):
         img = hik_latest[i]
@@ -159,6 +159,23 @@ def draw_preview(hik_latest, rs_latest, observations_by_color, hik_fps, rs_fps,
             if i in obs:
                 u, v = obs[i]
                 cv2.circle(c, (int(round(u)), int(round(v))), 8, COLOR_BRG[name], 2)
+        if yolo_details:
+            for name in COLOR_ORDER:
+                detail = yolo_details.get(i, {}).get(name)
+                if not detail:
+                    continue
+                u, v = detail['point']
+                confidence = float(detail['confidence'])
+                center = (int(round(u)), int(round(v)))
+                color = COLOR_BRG[name]
+                cv2.drawMarker(c, center, color, cv2.MARKER_CROSS, 20, 2, cv2.LINE_AA)
+                label = '%s %.2f (%d,%d)' % (name, confidence, center[0], center[1])
+                text_x = min(max(4, center[0] + 12), max(4, c.shape[1] - 210))
+                text_y = min(max(24, center[1] - 12), c.shape[0] - 8)
+                cv2.putText(c, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(c, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, color, 1, cv2.LINE_AA)
         cv2.putText(c, 'hik%d %.1f fps' % (i, hik_fps[i]), (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
         h, w = c.shape[:2]

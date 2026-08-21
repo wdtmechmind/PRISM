@@ -1,0 +1,337 @@
+{
+  "target": {
+    "type": "asymmetric_circle_grid",
+    "columns": 4,
+    "rows": 5,
+    "spacing_mm": 35.0
+  },
+  "camera_frame": "cam0",
+  "camera_calibration": "/mnt/projects-8tb/PRISM/configs/devices/charuco_4cam_result.json",
+  "board_frame": "origin=top_left_circle, +X=columns, +Y=rows, +Z=solvePnP_normal",
+  "base_from_cam0": [
+    [
+      -0.11854712308703401,
+      -0.9224873387670098,
+      0.36737404565693954,
+      0.03456680148221537
+    ],
+    [
+      -0.8991946670485378,
+      0.25667334864054087,
+      0.35435539060259896,
+      -0.4412659098179084
+    ],
+    [
+      -0.4211834877571255,
+      -0.2883329705604457,
+      -0.8599235824935446,
+      0.8983692575660969
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "tcp_from_board": [
+    [
+      -0.7119077539421167,
+      -0.7022726676629693,
+      0.0006709177499220751,
+      0.2759117071135687
+    ],
+    [
+      -0.7022699962250792,
+      0.7119016074116579,
+      -0.0035991341631486243,
+      -0.11053998942229187
+    ],
+    [
+      0.002049946125419988,
+      -0.003033416923927688,
+      -0.9999932980288665,
+      0.007209605738012936
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "num_samples": 27,
+  "samples": [
+    "frame_0004",
+    "frame_0005",
+    "frame_0006",
+    "frame_0007",
+    "frame_0008",
+    "frame_0009",
+    "frame_0010",
+    "frame_0011",
+    "frame_0012",
+    "frame_0013",
+    "frame_0014",
+    "frame_0015",
+    "frame_0016",
+    "frame_0017",
+    "frame_0018",
+    "frame_0019",
+    "frame_0020",
+    "frame_0021",
+    "frame_0022",
+    "frame_0023",
+    "frame_0024",
+    "frame_0025",
+    "frame_0030",
+    "frame_0031",
+    "frame_0032",
+    "frame_0033",
+    "frame_0035"
+  ],
+  "sample_sources": [
+    {
+      "frame": "frame_0004",
+      "camera": "cam0",
+      "reprojection_error_px": 0.49145691960992643,
+      "candidates": [
+        "cam0"
+      ]
+    },
+    {
+      "frame": "frame_0005",
+      "camera": "cam0",
+      "reprojection_error_px": 0.09061828368987557,
+      "candidates": [
+        "cam0"
+      ]
+    },
+    {
+      "frame": "frame_0006",
+      "camera": "cam0",
+      "reprojection_error_px": 0.05051428461084824,
+      "candidates": [
+        "cam0",
+        "cam3",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0007",
+      "camera": "cam3",
+      "reprojection_error_px": 0.04619361602728163,
+      "candidates": [
+        "cam3",
+        "cam0",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0008",
+      "camera": "cam3",
+      "reprojection_error_px": 0.06933455846037972,
+      "candidates": [
+        "cam3",
+        "cam0",
+        "cam1",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0009",
+      "camera": "cam1",
+      "reprojection_error_px": 0.04767481684856173,
+      "candidates": [
+        "cam1",
+        "cam3",
+        "cam0",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0010",
+      "camera": "cam1",
+      "reprojection_error_px": 0.03445798593759962,
+      "candidates": [
+        "cam1",
+        "cam2",
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0011",
+      "camera": "cam1",
+      "reprojection_error_px": 0.03465839884848597,
+      "candidates": [
+        "cam1",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0012",
+      "camera": "cam1",
+      "reprojection_error_px": 0.03386917189582145,
+      "candidates": [
+        "cam1",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0013",
+      "camera": "cam0",
+      "reprojection_error_px": 0.04894708860752138,
+      "candidates": [
+        "cam0",
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0014",
+      "camera": "cam0",
+      "reprojection_error_px": 0.043143455291184435,
+      "candidates": [
+        "cam0",
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0015",
+      "camera": "cam3",
+      "reprojection_error_px": 0.04549354868224019,
+      "candidates": [
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0016",
+      "camera": "cam0",
+      "reprojection_error_px": 0.05033504090613285,
+      "candidates": [
+        "cam0",
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0017",
+      "camera": "cam3",
+      "reprojection_error_px": 0.04046278769847995,
+      "candidates": [
+        "cam3",
+        "cam0"
+      ]
+    },
+    {
+      "frame": "frame_0018",
+      "camera": "cam2",
+      "reprojection_error_px": 0.07271405905622016,
+      "candidates": [
+        "cam2",
+        "cam0"
+      ]
+    },
+    {
+      "frame": "frame_0019",
+      "camera": "cam1",
+      "reprojection_error_px": 0.04037705102621124,
+      "candidates": [
+        "cam1",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0020",
+      "camera": "cam1",
+      "reprojection_error_px": 0.04533803032393636,
+      "candidates": [
+        "cam1",
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0021",
+      "camera": "cam2",
+      "reprojection_error_px": 0.1298783631275012,
+      "candidates": [
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0022",
+      "camera": "cam1",
+      "reprojection_error_px": 0.10761505052384221,
+      "candidates": [
+        "cam1"
+      ]
+    },
+    {
+      "frame": "frame_0023",
+      "camera": "cam3",
+      "reprojection_error_px": 0.053285804065146956,
+      "candidates": [
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0024",
+      "camera": "cam3",
+      "reprojection_error_px": 0.07257966584863998,
+      "candidates": [
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0025",
+      "camera": "cam3",
+      "reprojection_error_px": 0.07550249074993237,
+      "candidates": [
+        "cam3"
+      ]
+    },
+    {
+      "frame": "frame_0030",
+      "camera": "cam2",
+      "reprojection_error_px": 0.07223258683954056,
+      "candidates": [
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0031",
+      "camera": "cam2",
+      "reprojection_error_px": 0.08077493399715287,
+      "candidates": [
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0032",
+      "camera": "cam2",
+      "reprojection_error_px": 0.06195460205402189,
+      "candidates": [
+        "cam2",
+        "cam1"
+      ]
+    },
+    {
+      "frame": "frame_0033",
+      "camera": "cam2",
+      "reprojection_error_px": 0.06973940650910011,
+      "candidates": [
+        "cam2"
+      ]
+    },
+    {
+      "frame": "frame_0035",
+      "camera": "cam3",
+      "reprojection_error_px": 0.0555900917582308,
+      "candidates": [
+        "cam3"
+      ]
+    }
+  ],
+  "translation_rmse_m": 0.0010020162646419259,
+  "translation_max_m": 0.002934644318637687,
+  "rotation_rmse_deg": 0.2732875029258694,
+  "rotation_max_deg": 0.9334506708720667
+}

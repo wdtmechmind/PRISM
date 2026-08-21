@@ -13,6 +13,7 @@ import csv
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -85,6 +86,91 @@ def default_isaac_python() -> str:
     if isaac_python.exists():
         return str(isaac_python)
     return sys.executable
+
+
+CAMERA_PRESETS = {
+    "overhead_front": {
+        "pos": [0.0, 0.2, 0.0],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+    "overhead_back": {
+        "pos": [0.0, -0.2, 0.0],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+    "side_left": {
+        "pos": [0.25, 0.0, -0.05],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+    "side_right": {
+        "pos": [-0.25, 0.0, -0.05],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+    "diag_front_left": {
+        "pos": [0.20, 0.18, -0.04],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+    "diag_front_right": {
+        "pos": [-0.20, 0.18, -0.04],
+        "look_at": [0.0, 0.0, -0.9],
+    },
+}
+
+
+def _clip_duration_scale(scale: float) -> float:
+    return max(0.2, float(scale))
+
+
+def sample_trial_namespace(args: argparse.Namespace, rng: np.random.Generator) -> argparse.Namespace:
+    trial_ns = argparse.Namespace(**vars(args))
+
+    def jitter_xyz(base_xyz: Sequence[float], xy_jitter: float, z_jitter: float) -> List[float]:
+        base = np.asarray(base_xyz, dtype=np.float64).reshape(3)
+        base[0] += rng.uniform(-float(xy_jitter), float(xy_jitter))
+        base[1] += rng.uniform(-float(xy_jitter), float(xy_jitter))
+        base[2] += rng.uniform(-float(z_jitter), float(z_jitter))
+        return [float(base[0]), float(base[1]), float(base[2])]
+
+    if bool(args.randomize_per_trial):
+        trial_ns.home_xyz = jitter_xyz(args.home_xyz, args.home_jitter_xy, args.home_jitter_z)
+        trial_ns.pick_xyz = jitter_xyz(args.pick_xyz, args.pick_jitter_xy, args.pick_jitter_z)
+        trial_ns.place_xyz = jitter_xyz(args.place_xyz, args.place_jitter_xy, args.place_jitter_z)
+
+        duration_ratio = max(0.0, float(args.duration_jitter_ratio))
+        if duration_ratio > 0.0:
+            scale = _clip_duration_scale(1.0 + rng.uniform(-duration_ratio, duration_ratio))
+            trial_ns.move_sec = float(args.move_sec) * scale
+            trial_ns.approach_sec = float(args.approach_sec) * scale
+            trial_ns.grasp_sec = float(args.grasp_sec) * scale
+            trial_ns.lift_sec = float(args.lift_sec) * scale
+            trial_ns.transfer_sec = float(args.transfer_sec) * scale
+            trial_ns.release_sec = float(args.release_sec) * scale
+
+        yaw_jitter = max(0.0, float(args.yaw_jitter_deg))
+        if yaw_jitter > 0.0:
+            trial_ns.yaw_deg = float(args.yaw_deg) + rng.uniform(-yaw_jitter, yaw_jitter)
+
+    return trial_ns
+
+
+def build_camera_views(args: argparse.Namespace) -> List[dict]:
+    selected = [str(name).strip() for name in (args.camera_preset or []) if str(name).strip()]
+    views: List[dict] = []
+    for name in selected:
+        preset = CAMERA_PRESETS.get(name)
+        if preset is None:
+            raise SystemExit("unknown --camera-preset: %s (choices: %s)" % (name, ", ".join(sorted(CAMERA_PRESETS.keys()))))
+        views.append({
+            "name": name,
+            "pos": list(float(v) for v in preset["pos"]),
+            "look_at": list(float(v) for v in preset["look_at"]),
+        })
+    if views:
+        return views
+    return [{
+        "name": str(args.camera_name).strip(),
+        "pos": list(float(v) for v in args.camera_pos),
+        "look_at": list(float(v) for v in args.camera_look_at),
+    }]
 
 
 def build_pick_place_segments(args: argparse.Namespace) -> List[dict]:
@@ -324,8 +410,40 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--execute-replay", action="store_true", help="run replay_planned_motion in Isaac Sim after planning")
     parser.add_argument("--record-video", action="store_true", help="with --execute-replay, export overhead video")
     parser.add_argument("--camera-name", default="sim_overhead", help="recorded camera basename under trial cameras/ when --record-video")
+    parser.add_argument("--camera-pos", type=float, nargs=3, default=[0.0, 0.2, 0.0], metavar=("X", "Y", "Z"),
+                        help="camera position for single-view recording")
+    parser.add_argument("--camera-look-at", type=float, nargs=3, default=[0.0, 0.0, -0.9], metavar=("X", "Y", "Z"),
+                        help="camera look-at target for single-view recording")
+    parser.add_argument("--camera-preset", action="append", default=None,
+                        help="repeatable preset for multi-view recording; one of: %s" % ", ".join(sorted(CAMERA_PRESETS.keys())))
+    parser.add_argument("--task-object", dest="task_object", action=argparse.BooleanOptionalAction, default=True,
+                        help="render a task object in replay videos")
+    parser.add_argument("--task-object-spawn-z", type=float, default=None,
+                        help="optional spawn Z for replay task object center; default auto-places on tabletop")
+    parser.add_argument("--task-object-spawn-xy-range", type=float, nargs=2, default=[0.18, 0.12], metavar=("X", "Y"),
+                        help="uniform spawn range (+/-X, +/-Y) for replay task object")
+    parser.add_argument("--task-object-seed", type=int, default=None,
+                        help="optional RNG seed for replay task object placement")
+    parser.add_argument("--task-object-follow-grasp", dest="task_object_follow_grasp", action=argparse.BooleanOptionalAction, default=False,
+                        help="make replay task object follow hand during grasp poses")
+    parser.add_argument("--task-object-offset", type=float, nargs=3, default=[0.0, 0.0, -0.06], metavar=("X", "Y", "Z"),
+                        help="offset used when --task-object-follow-grasp is enabled")
+    parser.add_argument("--task-object-size", type=float, default=0.045,
+                        help="cube edge length for replay task object")
+    parser.add_argument("--task-object-color", type=float, nargs=3, default=[0.95, 0.35, 0.10], metavar=("R", "G", "B"),
+                        help="RGB color for replay task object")
     parser.add_argument("--headless", action="store_true", help="with --execute-replay, run Isaac headless")
     parser.add_argument("--strict-replay", action="store_true", help="fail the whole trial if replay/video capture fails")
+    parser.add_argument("--randomize-per-trial", action="store_true", help="randomize waypoints/timing per trial for diverse batch collection")
+    parser.add_argument("--home-jitter-xy", type=float, default=0.0, help="uniform jitter range (+/-m) on home x/y")
+    parser.add_argument("--home-jitter-z", type=float, default=0.0, help="uniform jitter range (+/-m) on home z")
+    parser.add_argument("--pick-jitter-xy", type=float, default=0.0, help="uniform jitter range (+/-m) on pick x/y")
+    parser.add_argument("--pick-jitter-z", type=float, default=0.0, help="uniform jitter range (+/-m) on pick z")
+    parser.add_argument("--place-jitter-xy", type=float, default=0.0, help="uniform jitter range (+/-m) on place x/y")
+    parser.add_argument("--place-jitter-z", type=float, default=0.0, help="uniform jitter range (+/-m) on place z")
+    parser.add_argument("--yaw-jitter-deg", type=float, default=0.0, help="uniform jitter range (+/-deg) around yaw")
+    parser.add_argument("--duration-jitter-ratio", type=float, default=0.0,
+                        help="uniform jitter ratio for segment durations (e.g. 0.2 => scale in [0.8,1.2])")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -336,9 +454,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args.fps = max(2.0, float(args.fps))
     if args.record_video and not args.execute_replay:
         raise SystemExit("--record-video requires --execute-replay")
+    if args.duration_jitter_ratio < 0.0:
+        raise SystemExit("--duration-jitter-ratio must be >= 0")
 
     output_root = Path(args.output_root).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(int(args.seed))
+    camera_views = build_camera_views(args)
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
     task_dir = output_root / ("task_%s_%s" % (stamp, sanitize_task_name(args.task_name)))
@@ -356,6 +478,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ("fps", float(args.fps)),
             ("pick_xyz", list(float(v) for v in args.pick_xyz)),
             ("place_xyz", list(float(v) for v in args.place_xyz)),
+            ("camera_views", camera_views),
+            ("randomize_per_trial", bool(args.randomize_per_trial)),
         ],
     )
 
@@ -369,11 +493,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             processed_trial = _REPO_ROOT / "data" / "processed" / "simulation" / task_dir.name / trial_dir.name
             corrected_path = processed_trial / "corrected_trajectory.csv"
             phase_path = processed_trial / "task_phases.csv"
+            trial_cfg = sample_trial_namespace(args, rng)
 
             if args.task_type != "pick_place":
                 raise SystemExit("unsupported task type: %s" % args.task_type)
-            segments = build_pick_place_segments(args)
-            samples, events = sample_segments(segments, fps=float(args.fps), yaw_deg=float(args.yaw_deg))
+            segments = build_pick_place_segments(trial_cfg)
+            samples, events = sample_segments(segments, fps=float(trial_cfg.fps), yaw_deg=float(trial_cfg.yaw_deg))
 
             write_corrected_trajectory(corrected_path, samples)
             write_phase_csv(phase_path, samples)
@@ -387,6 +512,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             gesture_path = trial_dir / "hand" / "sdk_commands.csv"
             planned_path = processed_trial / "planned_motion.csv"
+            captured_videos: List[str] = []
+            captured_timestamps: List[str] = []
 
             plan_cmd = [
                 args.isaac_python,
@@ -414,43 +541,68 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     raise SystemExit("--execute-replay requires planning; remove --skip-planning")
                 camera_dir = trial_dir / "cameras"
                 camera_dir.mkdir(parents=True, exist_ok=True)
-                video_out = camera_dir / ("%s.mp4" % str(args.camera_name).strip())
-                timestamp_out = camera_dir / ("%s_timestamps.csv" % str(args.camera_name).strip())
-                replay_cmd = [
-                    args.isaac_python,
-                    "simulation/scripts/replay_planned_motion.py",
-                    "--planned-motion", str(planned_path),
-                    "--robot-config", str(Path(args.robot_config).expanduser().resolve()),
-                    "--max-frames", "0",
-                    "--stride", "1",
-                ]
-                if args.record_video:
-                    replay_cmd.extend([
-                        "--record-video",
-                        "--video-path", str(video_out),
-                        "--video-fps", _fmt(float(args.fps), 6),
-                    ])
-                if args.headless:
-                    replay_cmd.extend(["--headless", "--no-preview"])
-                replay_ok = True
-                try:
-                    run_command("replay trial_%06d" % trial_id, replay_cmd, args.dry_run)
-                except subprocess.CalledProcessError as exc:
-                    replay_ok = False
-                    if args.strict_replay:
-                        raise SystemExit(
-                            "replay failed for trial_%06d (exit=%s). "
-                            "Use --strict-replay only when Isaac runtime is stable on this machine."
-                            % (trial_id, exc.returncode)
-                        ) from exc
-                    print(
-                        "[sim-task] WARN: replay failed for trial_%06d (exit=%s); collection outputs kept."
-                        % (trial_id, exc.returncode)
-                    )
-                if args.record_video and replay_ok and not args.dry_run and video_out.is_file():
-                    write_camera_timestamps(timestamp_out, samples, float(trial_timing["trial_start_wall"]))
-                elif args.record_video and not args.dry_run:
-                    print("[sim-task] WARN: camera video not available for trial_%06d" % trial_id)
+                processed_camera_dir = processed_trial / "cameras"
+                processed_camera_dir.mkdir(parents=True, exist_ok=True)
+                replay_overall_ok = True
+                for view in camera_views:
+                    view_name = str(view["name"]).strip() or "sim_overhead"
+                    video_out = camera_dir / ("%s.mp4" % view_name)
+                    timestamp_out = camera_dir / ("%s_timestamps.csv" % view_name)
+                    replay_cmd = [
+                        args.isaac_python,
+                        "simulation/scripts/replay_planned_motion.py",
+                        "--planned-motion", str(planned_path),
+                        "--robot-config", str(Path(args.robot_config).expanduser().resolve()),
+                        "--max-frames", "0",
+                        "--stride", "1",
+                        "--camera-pos", *(_fmt(float(v), 9) for v in view["pos"]),
+                        "--camera-look-at", *(_fmt(float(v), 9) for v in view["look_at"]),
+                        ("--task-object" if bool(args.task_object) else "--no-task-object"),
+                        "--task-object-size", _fmt(float(args.task_object_size), 9),
+                        "--task-object-spawn-xy-range", _fmt(float(args.task_object_spawn_xy_range[0]), 9), _fmt(float(args.task_object_spawn_xy_range[1]), 9),
+                        "--task-object-color", _fmt(float(args.task_object_color[0]), 9), _fmt(float(args.task_object_color[1]), 9), _fmt(float(args.task_object_color[2]), 9),
+                        ("--task-object-follow-grasp" if bool(args.task_object_follow_grasp) else "--no-task-object-follow-grasp"),
+                        "--task-object-offset", _fmt(float(args.task_object_offset[0]), 9), _fmt(float(args.task_object_offset[1]), 9), _fmt(float(args.task_object_offset[2]), 9),
+                    ]
+                    if args.task_object_spawn_z is not None:
+                        replay_cmd.extend(["--task-object-spawn-z", _fmt(float(args.task_object_spawn_z), 9)])
+                    if args.task_object_seed is not None:
+                        replay_cmd.extend(["--task-object-seed", str(int(args.task_object_seed) + int(trial_id))])
+                    if args.record_video:
+                        replay_cmd.extend([
+                            "--record-video",
+                            "--video-path", str(video_out),
+                            "--video-fps", _fmt(float(args.fps), 6),
+                        ])
+                    if args.headless:
+                        replay_cmd.extend(["--headless", "--no-preview"])
+                    view_ok = True
+                    try:
+                        run_command("replay trial_%06d view=%s" % (trial_id, view_name), replay_cmd, args.dry_run)
+                    except subprocess.CalledProcessError as exc:
+                        view_ok = False
+                        replay_overall_ok = False
+                        if args.strict_replay:
+                            raise SystemExit(
+                                "replay failed for trial_%06d view=%s (exit=%s). "
+                                "Use --strict-replay only when Isaac runtime is stable on this machine."
+                                % (trial_id, view_name, exc.returncode)
+                            ) from exc
+                        print(
+                            "[sim-task] WARN: replay failed for trial_%06d view=%s (exit=%s); collection outputs kept."
+                            % (trial_id, view_name, exc.returncode)
+                        )
+                    if args.record_video and view_ok and not args.dry_run and video_out.is_file() and video_out.stat().st_size > 0:
+                        write_camera_timestamps(timestamp_out, samples, float(trial_timing["trial_start_wall"]))
+                        processed_video_out = processed_camera_dir / video_out.name
+                        processed_timestamp_out = processed_camera_dir / timestamp_out.name
+                        shutil.copy2(video_out, processed_video_out)
+                        shutil.copy2(timestamp_out, processed_timestamp_out)
+                        captured_videos.append(str(video_out.relative_to(trial_dir)))
+                        captured_timestamps.append(str(timestamp_out.relative_to(trial_dir)))
+                    elif args.record_video and not args.dry_run:
+                        replay_overall_ok = False
+                        print("[sim-task] WARN: camera video not available/empty for trial_%06d view=%s" % (trial_id, view_name))
 
             base_wall = time.time()
             for event in events:
@@ -482,11 +634,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ("end_wall_time", float(trial_timing["trial_end_wall"])),
                     ("duration_sec", float(trial_timing["duration_sec"])),
                     ("sdk_commands_log", "hand/sdk_commands.csv"),
-                    ("camera_video", "cameras/%s.mp4" % str(args.camera_name).strip() if args.record_video else ""),
-                    ("camera_timestamps", "cameras/%s_timestamps.csv" % str(args.camera_name).strip() if args.record_video else ""),
+                    ("camera_video", captured_videos[0] if captured_videos else ""),
+                    ("camera_timestamps", captured_timestamps[0] if captured_timestamps else ""),
+                    ("camera_videos", captured_videos),
+                    ("camera_timestamp_files", captured_timestamps),
+                    ("processed_camera_videos", [str((processed_trial / path).relative_to(processed_trial)) for path in captured_videos]),
+                    ("processed_camera_timestamps", [str((processed_trial / path.replace(".mp4", "_timestamps.csv")).relative_to(processed_trial)) for path in captured_videos]),
                     ("phase_csv", str(phase_path)),
                     ("corrected_trajectory", str(corrected_path)),
                     ("planned_motion", str(planned_path)),
+                    ("trial_home_xyz", [float(v) for v in trial_cfg.home_xyz]),
+                    ("trial_pick_xyz", [float(v) for v in trial_cfg.pick_xyz]),
+                    ("trial_place_xyz", [float(v) for v in trial_cfg.place_xyz]),
+                    ("trial_yaw_deg", float(trial_cfg.yaw_deg)),
                 ],
             )
 

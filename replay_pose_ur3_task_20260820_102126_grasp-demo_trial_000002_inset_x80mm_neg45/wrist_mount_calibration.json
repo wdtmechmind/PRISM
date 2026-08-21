@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "type": "ur3_wrist3_mount_offset",
+  "axis": "wrist_3/local_tool_z",
+  "wrist3_offset_rad": 1.7452035719400936,
+  "wrist3_offset_deg": 99.9927990633233,
+  "pause_source_time_s": 1.8670744972005597,
+  "planned_wrist3_rad": -2.0444587681882838,
+  "calibrated_wrist3_rad": -0.29925519624818975,
+  "bundle_dir": "/mnt/projects-8tb/PRISM/replay_pose_ur3_task_20260820_102126_grasp-demo_trial_000002_inset_x80mm_neg45",
+  "robot_ip": "192.168.1.102",
+  "created_unix_time": 1787211072.3364308,
+  "application": "post-multiply replay TCP orientation by local tool-Z rotation"
+}

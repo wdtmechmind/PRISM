@@ -1,0 +1,162 @@
+{
+  "source_trajectory": "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260805_163433_realsense_assembly/trial_000001/corrected_trajectory.csv",
+  "frame": {
+    "pose_of": "MechHand base_link (the arm-flange mount face)",
+    "expressed_in": "robot base frame",
+    "position_units": "metres",
+    "orientation": "quaternion (qw,qx,qy,qz) and UR rotation vector (rx,ry,rz)",
+    "tcp_note": "set the controller TCP to the MechHand base_link offset from the flange; if the hand bolts straight onto the flange the TCP offset is zero",
+    "mount_correction_deg": 45.0,
+    "mount_correction_axis": "right"
+  },
+  "trajectory": {
+    "frames": 9005,
+    "rate_hz": 125.0,
+    "duration_s": 218.279,
+    "time_scale": 0.33,
+    "spatial_scale": 0.6,
+    "smoothing_window_s": 0.35,
+    "start_pose": {
+      "xyz": [
+        0.331238,
+        -0.062157,
+        0.141243
+      ],
+      "quat_wxyz": [
+        -0.085858126,
+        0.356973583,
+        0.196447806,
+        0.909179027
+      ],
+      "rotvec": [
+        -1.064020891,
+        -0.585546323,
+        -2.709963771
+      ],
+      "note": "move here first and confirm before streaming"
+    },
+    "reach_m": {
+      "min": 0.2706,
+      "max": 0.3904
+    },
+    "envelope_radius_m": 0.1428,
+    "peak_linear_speed_m_s": 0.0727,
+    "peak_angular_speed_rad_s": 0.6832
+  },
+  "hand": {
+    "gesture_events": [
+      {
+        "t_sec": 3.662,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 6.748,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 10.489,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 12.973,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 17.735,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 21.113,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 25.967,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 26.02,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 26.076,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 30.778,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 41.401,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 45.439,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 49.081,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 52.47,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 59.551,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 60.816,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 62.436,
+        "gesture_id": 5,
+        "rog": 4,
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 66.838,
+        "gesture_id": 6,
+        "rog": 5,
+        "pose": "two_open_b"
+      }
+    ],
+    "protocol": "MechHand socket, raw command @ROG<gesture_id-1>&"
+  },
+  "checks": {
+    "problems": []
+  }
+}

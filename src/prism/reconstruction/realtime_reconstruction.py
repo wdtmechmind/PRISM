@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
 
+from prism.common import console
 from prism.common.timebase import pick_bracket, pick_nearest
+from prism.reconstruction.hand_frame import build_hand_body_model, load_spec as load_hand_frame_spec
 
 try:
     from ultralytics import YOLO
@@ -62,7 +64,26 @@ def _select_body_frame_colors(world_points_by_color):
     return available[:3]
 
 
-def build_body_model(world_points_by_color):
+def build_body_model(world_points_by_color, hand_spec=None):
+    """Build the LED body model.
+
+    Prefers the absolute MechHand ``base_link`` frame defined by the LED
+    constellation geometry; falls back to the legacy ad-hoc frame built from the
+    first three visible LEDs, whose orientation is only meaningful relative to
+    the frame it was built on.
+    """
+    spec = hand_spec if hand_spec is not None else load_hand_frame_spec()
+    model = build_hand_body_model(world_points_by_color, spec)
+    if model is not None:
+        max_skew = float(spec.get('max_skew_deg', 15.0))
+        if model['skew_deg'] > max_skew:
+            console.warning(
+                'LED forward/right axes are %.1f deg from perpendicular (limit %.1f); '
+                'falling back to the relative body frame -- check LED colour assignment'
+                % (model['skew_deg'], max_skew))
+        else:
+            return model
+
     frame_colors = _select_body_frame_colors(world_points_by_color)
     if len(frame_colors) < 3:
         return None
@@ -92,6 +113,8 @@ def build_body_model(world_points_by_color):
         'init_origin': origin,
         'init_rot_wb': rot_wb,
         'frame_colors': frame_colors,
+        'frame': 'relative_first_frame',
+        'skew_deg': float('nan'),
     }
 
 
@@ -189,7 +212,7 @@ def _label_to_color(label):
 
 
 class LedDetector(object):
-    def __init__(self, hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.25,
+    def __init__(self, hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.5,
                  yolo_iou=0.45, yolo_imgsz=640):
         self.hsv_cfg = hsv_cfg
         self.min_area = float(min_area)
@@ -283,7 +306,7 @@ class LedDetector(object):
         return merged
 
 
-def build_led_detector(hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.25,
+def build_led_detector(hsv_cfg, min_area, backend='hsv', yolo_weights='', yolo_conf=0.5,
                        yolo_iou=0.45, yolo_imgsz=640):
     return LedDetector(
         hsv_cfg=hsv_cfg,

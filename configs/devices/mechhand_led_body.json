@@ -1,0 +1,11 @@
+{
+  "forward_from": ["red", "blue"],
+  "right_from": ["yellow", "green"],
+  "origin_anchor": "blue",
+  "origin_forward_m": 0.005,
+  "origin_right_m": 0.0,
+  "origin_up_m": -0.03,
+  "max_skew_deg": 15.0,
+  "mount_correction_axis": "right",
+  "mount_correction_deg": -45.0
+}

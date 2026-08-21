@@ -97,6 +97,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-fps", type=float, default=60.0)
     parser.add_argument("--camera-pos", type=float, nargs=3, default=[0.0, 0.2, 0.0], metavar=("X", "Y", "Z"))
     parser.add_argument("--camera-look-at", type=float, nargs=3, default=[0.0, 0.0, -0.9], metavar=("X", "Y", "Z"))
+    parser.add_argument("--task-object", dest="task_object", action=argparse.BooleanOptionalAction, default=True,
+                        help="add a visible pick-place object into the replay scene")
+    parser.add_argument("--task-object-size", type=float, default=0.045, help="task object cube edge length in meters")
+    parser.add_argument("--task-object-spawn-z", type=float, default=None,
+                        help="optional spawn Z for task object center; default auto-places on tabletop")
+    parser.add_argument("--task-object-spawn-xy-range", type=float, nargs=2, default=[0.18, 0.12], metavar=("X", "Y"),
+                        help="uniform spawn range (+/-X, +/-Y) around table center")
+    parser.add_argument("--task-object-seed", type=int, default=None,
+                        help="optional RNG seed for reproducible random tabletop object placement")
+    parser.add_argument("--task-object-follow-grasp", dest="task_object_follow_grasp", action=argparse.BooleanOptionalAction, default=False,
+                        help="when enabled, object follows hand target during grasp poses")
+    parser.add_argument("--task-object-offset", type=float, nargs=3, default=[0.0, 0.0, -0.06], metavar=("X", "Y", "Z"),
+                        help="offset from hand target to object center while grasping")
+    parser.add_argument("--task-object-color", type=float, nargs=3, default=[0.95, 0.35, 0.10], metavar=("R", "G", "B"),
+                        help="RGB color of the task object in [0,1]")
     return parser
 
 
@@ -177,6 +192,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             xf.AddTranslateOp().Set(Gf.Vec3d(*off))
             xf.AddScaleOp().Set(Gf.Vec3f(*size))
 
+    def is_grasp_pose(name: str) -> bool:
+        pose = str(name or "").strip().lower()
+        return ("grasp" in pose) and ("open" not in pose)
+
     def find_articulation_root(root_path: str) -> str:
         root = stage.GetPrimAtPath(root_path)
         if not root or not root.IsValid():
@@ -210,8 +229,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     fill.CreateIntensityAttr(450.0)
     make_axis_triad("/World/CorrectedFrame", length=0.28, thick=0.008)
     UsdGeom.Xform.Define(stage, "/World/Table")
-    UsdGeom.Xformable(stage.GetPrimAtPath("/World/Table")).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -1.015))
-    make_box("/World/Table/surface", (1.2, 0.7, 0.03), (0.50, 0.45, 0.38), opacity=1.0)
+    table_origin_z = -1.015
+    table_size_xyz = (1.2, 0.7, 0.03)
+    UsdGeom.Xformable(stage.GetPrimAtPath("/World/Table")).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, table_origin_z))
+    make_box("/World/Table/surface", table_size_xyz, (0.50, 0.45, 0.38), opacity=1.0)
+
+    task_object_translate = None
+    if bool(args.task_object):
+        object_cube = make_box(
+            "/World/TaskObject",
+            (float(args.task_object_size), float(args.task_object_size), float(args.task_object_size)),
+            tuple(float(v) for v in args.task_object_color),
+            opacity=1.0,
+        )
+        task_object_xform = UsdGeom.Xformable(object_cube)
+        task_object_translate = task_object_xform.AddTranslateOp()
 
     target_marker = make_box("/World/ReplayTarget", (0.018, 0.018, 0.018), (1.0, 0.9, 0.1), opacity=1.0)
     target_marker_xform = UsdGeom.Xformable(target_marker)
@@ -273,6 +305,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("[planned-replay] frames: %d" % len(rows))
     print("[planned-replay] IK-success rows: %d/%d" % (sum(row["ik_success"] for row in rows), len(rows)))
 
+    object_pos = None
+    hand_to_object_offset = np.asarray(args.task_object_offset, dtype=np.float64).reshape(3)
+    
+    # Initialize task object position AFTER physics world reset
+    if task_object_translate is not None:
+        rng = np.random.default_rng(args.task_object_seed)
+        x_rng = max(0.0, float(args.task_object_spawn_xy_range[0]))
+        y_rng = max(0.0, float(args.task_object_spawn_xy_range[1]))
+        table_top_z = float(table_origin_z + 0.5 * float(table_size_xyz[2]))
+        object_half = 0.5 * float(args.task_object_size)
+        spawn_z = float(args.task_object_spawn_z) if args.task_object_spawn_z is not None else table_top_z
+        object_pos = np.array([
+            rng.uniform(-x_rng, x_rng),
+            rng.uniform(-y_rng, y_rng),
+            spawn_z,
+        ], dtype=np.float64)
+        if object_pos is not None:
+            task_object_translate.Set(Gf.Vec3d(*[float(v) for v in object_pos]))
+            # Force physics update after position change
+            for _ in range(4):
+                simulation_app.update()
+            print(
+                "[planned-replay] task object spawn: x=%.3f y=%.3f z=%.3f (table_top_z=%.3f)"
+                % (float(object_pos[0]), float(object_pos[1]), float(object_pos[2]), table_top_z)
+            )
+
     joint_positions = np.zeros(len(dof_names), dtype=np.float64)
     zero_velocities = np.zeros(len(dof_names), dtype=np.float64)
     render_every = max(1, int(args.render_every))
@@ -286,6 +344,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         articulation.apply_action(ArticulationAction(joint_positions=joint_positions))
         if np.all(np.isfinite(row["target_hand"])):
             target_marker_translate.Set(Gf.Vec3d(*[float(v) for v in row["target_hand"]]))
+            if task_object_translate is not None and bool(args.task_object_follow_grasp):
+                grasped_now = is_grasp_pose(row["hand_pose_name"])
+                if grasped_now:
+                    object_pos = np.asarray(row["target_hand"], dtype=np.float64) + hand_to_object_offset
+                elif object_pos is None:
+                    object_pos = np.asarray(row["target_hand"], dtype=np.float64) + hand_to_object_offset
+                if object_pos is not None:
+                    task_object_translate.Set(Gf.Vec3d(*[float(v) for v in object_pos]))
         should_render = bool(args.record_video) or (not args.headless and frame_index % render_every == 0)
         world.step(render=should_render)
         if args.record_video:

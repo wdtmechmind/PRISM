@@ -76,7 +76,7 @@ def write_task_metadata(session_dir, args, timestamp):
         ('tracking_detector', {
             'backend': getattr(args, 'detector_backend', 'hsv'),
             'yolo_weights': getattr(args, 'yolo_weights', ''),
-            'yolo_conf': getattr(args, 'yolo_conf', 0.25),
+            'yolo_conf': getattr(args, 'yolo_conf', 0.5),
             'yolo_iou': getattr(args, 'yolo_iou', 0.45),
             'yolo_imgsz': getattr(args, 'yolo_imgsz', 640),
         }),

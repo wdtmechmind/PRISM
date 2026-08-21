@@ -86,7 +86,7 @@ min_area: 10.0
 max_norm_reproj_error: 0.015
 detector_backend: yolo
 yolo_weights: /home/daotan/runs/detect/runs/detect/prism_led_yolo/weights/best.pt
-yolo_conf: 0.25
+yolo_conf: 0.5
 yolo_iou: 0.45
 yolo_imgsz: 640
 max_traj_points: 5000

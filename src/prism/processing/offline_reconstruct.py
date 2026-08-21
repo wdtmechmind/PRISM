@@ -58,7 +58,7 @@ HSV_DEFAULTS = {
 DETECTION_DEFAULTS = {
     'detector_backend': 'hsv',
     'yolo_weights': '',
-    'yolo_conf': 0.25,
+    'yolo_conf': 0.5,
     'yolo_iou': 0.45,
     'yolo_imgsz': 640,
 }
@@ -330,14 +330,14 @@ def _visible_str(cam_indices):
 
 
 def _parse_init_colors(raw):
-    """Parse a comma-separated color list and return exactly 3 unique colors."""
+    """Parse a comma-separated color list; 4 colors enable the absolute hand frame."""
     text = (raw or '').strip()
     if not text:
         raise ValueError('model init colors cannot be empty')
     parts = [p.strip().lower() for p in text.split(',') if p.strip()]
-    if len(parts) != 3:
-        raise ValueError('model init colors must contain exactly 3 entries: %s' % raw)
-    if len(set(parts)) != 3:
+    if len(parts) not in (3, 4):
+        raise ValueError('model init colors must contain 3 or 4 entries: %s' % raw)
+    if len(set(parts)) != len(parts):
         raise ValueError('model init colors must be unique: %s' % raw)
     for name in parts:
         if name not in COLOR_ORDER:
@@ -345,9 +345,86 @@ def _parse_init_colors(raw):
     return tuple(parts)
 
 
+def _find_init_window(frame_points, colors, warmup):
+    """Average the first run of ``warmup`` consecutive frames showing all ``colors``."""
+    run = []
+    for entry in frame_points:
+        if all(name in entry['points'] for name in colors):
+            run.append(entry['points'])
+            if len(run) >= warmup:
+                return {
+                    name: np.mean(np.asarray([p[name] for p in run], dtype=np.float64), axis=0)
+                    for name in colors
+                }
+        else:
+            run = []
+    return None
+
+
+def solve_rigid_poses(frame_points, model_init_colors, warmup, label=''):
+    """Fit the body model once, then estimate a pose for every frame in the trial.
+
+    The model is initialized from the first good window anywhere in the trial, so
+    LEDs occluded at the start no longer cost the whole trial its 6D pose. If no
+    window ever shows all ``model_init_colors``, this falls back to progressively
+    shorter windows and then to 3-color subsets, which yields the relative body
+    frame instead of the absolute MechHand one.
+    """
+    if not frame_points:
+        return []
+
+    attempts = [(tuple(model_init_colors), warmup)]
+    if warmup > 1:
+        attempts.append((tuple(model_init_colors), max(1, warmup // 3)))
+    if len(model_init_colors) > 3:
+        for dropped in model_init_colors:
+            subset = tuple(n for n in model_init_colors if n != dropped)
+            attempts.append((subset, max(1, warmup // 3)))
+
+    rigid_model = None
+    for colors, need in attempts:
+        if len(colors) < 3:
+            continue
+        init_points = _find_init_window(frame_points, colors, need)
+        if init_points is None:
+            continue
+        rigid_model = build_body_model(init_points)
+        if rigid_model is not None:
+            console.info('%s: body frame = %s (init %s x%d frames, LED axis skew %.2f deg)'
+                         % (label, rigid_model['frame'], ','.join(colors), need,
+                            rigid_model['skew_deg']))
+            break
+
+    if rigid_model is None:
+        console.warning('%s: could not initialize a body model; no 6D pose written' % label)
+        return []
+
+    rigid_rows = []
+    for entry in frame_points:
+        est = estimate_pose_from_model(rigid_model['model_points'], entry['points'])
+        if est is None:
+            continue
+        pose_rot, pose_trans = est
+        update_body_model(rigid_model['model_points'], entry['points'], pose_rot, pose_trans)
+        modeled = [n for n in COLOR_ORDER if n in rigid_model['model_points']]
+        used = [n for n in modeled if n in entry['points']]
+        rigid_rows.append({
+            'frame': entry['frame'],
+            't_ref': entry['t_ref'],
+            't_trial': entry['t_trial'],
+            'pos': np.asarray(pose_trans, dtype=np.float64).reshape(3),
+            'rot': np.asarray(pose_rot, dtype=np.float64).reshape(3, 3),
+            'num_used': len(used),
+            'modeled': ','.join(modeled),
+            'visible': ','.join(entry['visible']),
+        })
+    return rigid_rows
+
+
 def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
                       smooth_window=5, smooth_max_gap=3, despike_window=3,
-                      model_init_warmup_frames=10, model_init_colors=('yellow', 'blue', 'green')):
+                      model_init_warmup_frames=10,
+                      model_init_colors=('red', 'yellow', 'blue', 'green')):
     """Reconstruct one trial; write trajectory + rigid pose CSVs. Returns paths."""
     cameras_dir = os.path.join(trial_dir, 'cameras')
     streams = discover_hik_streams(cameras_dir)
@@ -379,14 +456,13 @@ def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
     rigid_path = os.path.join(traj_dir, 'rigid_pose_6d.csv')
 
     ts_ref = ts_by_cam[ref_i]
-    rigid_model = None
-    warmup_points = []
     n_measured = 0
     n_frames = 0
-    # Accumulate measured LED points per color and rigid poses so we can smooth
-    # each track before writing (smoothing needs the whole time series).
+    # Accumulate measured LED points per color and per frame so we can smooth
+    # each track before writing, and so the body model can be initialized from
+    # the best window anywhere in the trial rather than only from its start.
     led_rows = {name: [] for name in COLOR_ORDER}
-    rigid_rows = []
+    frame_points = []
 
     j = 0
     while cur[ref_i] is not None and j < len(ts_ref):
@@ -439,41 +515,13 @@ def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
 
         visible_names = [n for n in COLOR_ORDER if n in point_by_color]
         if len(point_by_color) >= 3:
-            if rigid_model is None:
-                if all(name in point_by_color for name in model_init_colors):
-                    warmup_points.append({
-                        name: np.asarray(point_by_color[name], dtype=np.float64).reshape(3)
-                        for name in model_init_colors
-                    })
-                    if len(warmup_points) >= model_init_warmup_frames:
-                        init_points = {}
-                        for name in model_init_colors:
-                            init_points[name] = np.mean(
-                                np.asarray([w[name] for w in warmup_points], dtype=np.float64),
-                                axis=0,
-                            )
-                        rigid_model = build_body_model(init_points)
-                        if rigid_model is None:
-                            warmup_points = []
-                else:
-                    warmup_points = []
-            if rigid_model is not None:
-                est = estimate_pose_from_model(rigid_model['model_points'], point_by_color)
-                if est is not None:
-                    pose_rot, pose_trans = est
-                    update_body_model(rigid_model['model_points'], point_by_color, pose_rot, pose_trans)
-                    modeled = [n for n in COLOR_ORDER if n in rigid_model['model_points']]
-                    used = [n for n in modeled if n in point_by_color]
-                    rigid_rows.append({
-                        'frame': j,
-                        't_ref': t_ref,
-                        't_trial': t_trial,
-                        'pos': np.asarray(pose_trans, dtype=np.float64).reshape(3),
-                        'rot': np.asarray(pose_rot, dtype=np.float64).reshape(3, 3),
-                        'num_used': len(used),
-                        'modeled': ','.join(modeled),
-                        'visible': ','.join(visible_names),
-                    })
+            frame_points.append({
+                'frame': j,
+                't_ref': t_ref,
+                't_trial': t_trial,
+                'points': point_by_color,
+                'visible': visible_names,
+            })
 
         ok, frame = caps[ref_i].read()
         cur[ref_i] = frame if ok else None
@@ -481,6 +529,9 @@ def reconstruct_trial(trial_dir, cameras, detector, max_reproj, tol_s,
 
     for cap in caps.values():
         cap.release()
+
+    rigid_rows = solve_rigid_poses(frame_points, model_init_colors, model_init_warmup_frames,
+                                   label=os.path.basename(trial_dir))
 
     # Smooth each color's track (despike + short-gap interp + moving average),
     # then write raw and smoothed positions side by side.
@@ -595,7 +646,7 @@ def reconstruct_task(task_dir, calib_json=None, config_path=None, detector_backe
                      tol_ms=8.0,
                      smooth_window=5, smooth_max_gap=3, despike_window=3,
                      model_init_warmup_frames=10,
-                     model_init_colors=('yellow', 'blue', 'green'),
+                     model_init_colors=('red', 'yellow', 'blue', 'green'),
                      quality_report=True, quality_write_json=False,
                      quality_static_t0=None, quality_static_t1=None,
                      quality_static_min_frames=20, quality_static_max_range_mm=3.0):
@@ -713,8 +764,9 @@ def main(argv=None):
                         help='max missing-frame gap bridged by interpolation before a track is split')
     parser.add_argument('--model-init-warmup-frames', type=int, default=10,
                         help='consecutive frames required to initialize rigid body model')
-    parser.add_argument('--model-init-colors', type=str, default='yellow,blue,green',
-                        help='fixed 3-color order to define rigid body frame, e.g. yellow,blue,green')
+    parser.add_argument('--model-init-colors', type=str, default='red,yellow,blue,green',
+                        help='colors used to define the rigid body frame; all 4 gives the '
+                             'absolute MechHand base_link frame, 3 falls back to a relative frame')
     parser.add_argument('--no-quality-report', action='store_true',
                         help='disable automatic trajectory quality report generation after each trial')
     parser.add_argument('--quality-write-json', action='store_true',

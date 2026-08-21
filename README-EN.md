@@ -235,7 +235,7 @@ YOLO is attempted first. For any color not detected above the confidence thresho
 # CLI flags (apply to both collection and offline reconstruction)
 --detector-backend   hsv | yolo | hybrid
 --yolo-weights       path/to/best.pt
---yolo-conf          0.25            # confidence threshold
+--yolo-conf          0.5             # confidence threshold
 --yolo-iou           0.45            # NMS IoU threshold
 --yolo-imgsz         640             # inference image size
 ```
@@ -318,7 +318,7 @@ Every output row carries two time columns:
 prism-reconstruct-trials data/raw/task_xxx \
   --detector-backend hybrid \
   --yolo-weights /path/to/best.pt \
-  --yolo-conf 0.3
+  --yolo-conf 0.5
 ```
 
 ---

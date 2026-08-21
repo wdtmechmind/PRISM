@@ -69,6 +69,8 @@ DEFAULT_ONLINE_CONFIG = os.path.abspath(
 )
 
 HAND_COMMAND_LOG_HEADER = ['t_sec', 'wall_time', 'trial_time', 'action', 'command', 'status', 'message']
+# Preview frames to wait for all four LEDs before settling for the relative body frame.
+RIGID_MODEL_WAIT_FRAMES = 60
 RPI_ENCODER_LOG_HEADER = (
     ['t_sec', 'wall_time', 'trial_time', 'action', 'status', 'source', 'rpi_wall_time', 'rpi_monotonic'] +
     ['enc%d_pos' % i for i in range(1, 6)] +
@@ -164,7 +166,7 @@ DEFAULT_CLI_VALUES = {
     'max_norm_reproj_error': 0.015,
     'detector_backend': 'hsv',
     'yolo_weights': '',
-    'yolo_conf': 0.25,
+    'yolo_conf': 0.5,
     'yolo_iou': 0.45,
     'yolo_imgsz': 640,
     'max_traj_points': 5000,
@@ -354,6 +356,7 @@ class SessionManager(object):
         self.track_near = make_track_state()
         self.track_interp = make_track_state()
         self.rigid_model = None
+        self.rigid_model_wait_frames = 0
         self.pose_history = []
         self.pose_rot_history = []
         self.pose_valid_prev = False
@@ -1026,6 +1029,7 @@ class SessionManager(object):
         self.track_near = make_track_state()
         self.track_interp = make_track_state()
         self.rigid_model = None
+        self.rigid_model_wait_frames = 0
         self.pose_history = []
         self.pose_rot_history = []
         self.pose_valid_prev = False
@@ -1179,10 +1183,15 @@ class SessionManager(object):
         visible_names = [name for name in COLOR_ORDER if name in valid_points]
         if len(valid_points) >= 3:
             if self.rigid_model is None:
-                self.rigid_model = build_body_model(valid_points)
-                if self.rigid_model is not None:
-                    console.success('rigid model initialized from LEDs: %s.'
-                                    % ','.join(self.rigid_model['model_points'].keys()))
+                # Hold out for all four LEDs so the absolute hand frame can be built;
+                # only settle for the relative frame once waiting has clearly failed.
+                self.rigid_model_wait_frames += 1
+                if len(valid_points) >= 4 or self.rigid_model_wait_frames > RIGID_MODEL_WAIT_FRAMES:
+                    self.rigid_model = build_body_model(valid_points)
+                    if self.rigid_model is not None:
+                        console.success('rigid model initialized from LEDs: %s (frame: %s).'
+                                        % (','.join(self.rigid_model['model_points'].keys()),
+                                           self.rigid_model['frame']))
 
             if self.rigid_model is not None:
                 modeled_names = [name for name in COLOR_ORDER if name in self.rigid_model['model_points']]

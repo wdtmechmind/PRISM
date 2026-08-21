@@ -417,7 +417,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ("tracking_detector", {
                 "backend": "simulated",
                 "yolo_weights": "",
-                "yolo_conf": 0.25,
+                "yolo_conf": 0.5,
                 "yolo_iou": 0.45,
                 "yolo_imgsz": 640,
             }),

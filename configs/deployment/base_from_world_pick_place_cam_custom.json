@@ -1,0 +1,57 @@
+{
+  "base_from_world": [
+    [
+      -0.6334011284793001,
+      0.7738236300612364,
+      0.0,
+      0.4310540959212455
+    ],
+    [
+      -0.7738236300612364,
+      -0.6334011284793001,
+      0.0,
+      -0.0011972653829094744
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      -0.08731707317072862
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "source": "fit_base_from_world",
+  "yaw_deg": -129.3014997763543,
+  "target_centroid_base": [
+    0.45,
+    0.0,
+    0.3
+  ],
+  "trajectories": [
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000001/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000002/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000003/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000004/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000005/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000006/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000007/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000008/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000009/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000010/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000011/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000012/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000013/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000014/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000015/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000016/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000017/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000018/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000019/corrected_trajectory.csv",
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260811_154634_pick_place_cam_custom/trial_000020/corrected_trajectory.csv"
+  ]
+}

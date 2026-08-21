@@ -1,0 +1,51 @@
+{
+  "source_trajectory": "/mnt/projects-8tb/PRISM/data/raw/task_20260820_155002_grasp-demo/trial_000002/trajectory/rigid_pose_6d.csv",
+  "source_hand_sdk": "/mnt/projects-8tb/PRISM/data/raw/task_20260820_155002_grasp-demo/trial_000002/hand/sdk_commands.csv",
+  "base_from_cam0": [
+    [
+      -0.11854712308703401,
+      -0.9224873387670098,
+      0.36737404565693954,
+      0.03456680148221537
+    ],
+    [
+      -0.8991946670485378,
+      0.25667334864054087,
+      0.35435539060259896,
+      -0.4412659098179084
+    ],
+    [
+      -0.4211834877571255,
+      -0.2883329705604457,
+      -0.8599235824935446,
+      0.8983692575660969
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "base_offset_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "input_frame": "cam0",
+  "source_pose_frame": "led_base_link_as_captured",
+  "output_frame": "robot_base",
+  "position_units": "m",
+  "orientation": "UR axis-angle rotation vector, rad",
+  "rows": 2737,
+  "used_smoothed": true,
+  "min_num_leds": 3,
+  "mount_correction": {
+    "applied_during_rigid_reconstruction": false,
+    "axis_in_semantic_frame": "right",
+    "angle_deg": -45.0,
+    "applied_during_base_conversion": true
+  },
+  "handeye_translation_rmse_m": 0.0010020162646419259,
+  "handeye_rotation_rmse_deg": 0.2732875029258694
+}

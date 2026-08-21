@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "type": "ur3_wrist3_mount_offset",
+  "axis": "wrist_3/local_tool_z",
+  "wrist3_offset_rad": 1.7452035719400936,
+  "wrist3_offset_deg": 99.9927990633233,
+  "robot_ip": "192.168.1.102",
+  "application": "post-multiply replay TCP orientation by local tool-Z rotation",
+  "note": "Deployment-level calibration reused across trajectories for the same physical UR3 and hand mounting."
+}

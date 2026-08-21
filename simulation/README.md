@@ -69,6 +69,46 @@ enable replay explicitly:
   --execute-replay --record-video --headless
 ```
 
+For viewpoint control, you can either set a single camera pose or request
+multiple presets in one run:
+
+```bash
+# Single custom camera view
+/isaac-sim/python.sh simulation/scripts/collect_sim_task.py \
+  --task-name pick_place_cam_custom \
+  --num-trials 1 \
+  --execute-replay --record-video --headless \
+  --camera-name cam_custom \
+  --camera-pos 0.12 0.22 -0.03 \
+  --camera-look-at 0.0 0.0 -0.9
+
+# Multi-view export per trial (repeat --camera-preset)
+/isaac-sim/python.sh simulation/scripts/collect_sim_task.py \
+  --task-name pick_place_multiview \
+  --num-trials 4 \
+  --execute-replay --record-video --headless \
+  --camera-preset overhead_front \
+  --camera-preset overhead_back \
+  --camera-preset side_left \
+  --camera-preset side_right
+```
+
+For batched dataset diversity (avoid near-identical trials), enable per-trial
+randomization:
+
+```bash
+/isaac-sim/python.sh simulation/scripts/collect_sim_task.py \
+  --task-name pick_place_batch_diverse \
+  --num-trials 200 \
+  --skip-planning \
+  --randomize-per-trial \
+  --pick-jitter-xy 0.06 --pick-jitter-z 0.02 \
+  --place-jitter-xy 0.08 --place-jitter-z 0.02 \
+  --home-jitter-xy 0.03 --home-jitter-z 0.02 \
+  --yaw-jitter-deg 35 \
+  --duration-jitter-ratio 0.20
+```
+
 If planning fails in a non-Isaac environment, run collection-only mode with
 `--skip-planning` first, then replay later with Isaac Sim.
 
@@ -77,9 +117,21 @@ trial camera folder (default camera name `sim_overhead`):
 
 ```text
 data/raw/task_*/trial_*/cameras/
-  sim_overhead.mp4
-  sim_overhead_timestamps.csv
+  <camera_name>.mp4
+  <camera_name>_timestamps.csv
 ```
+
+The same camera files are also copied to processed trial outputs for training
+pipelines that read from `data/processed/simulation/...`:
+
+```text
+data/processed/simulation/<task>/<trial>/cameras/
+  <camera_name>.mp4
+  <camera_name>_timestamps.csv
+```
+
+When using multiple `--camera-preset` values, each trial now writes one mp4 and
+timestamp CSV per selected preset.
 
 By default, replay/video failures are treated as non-fatal warnings so task
 collection files are still kept. Add `--strict-replay` to make replay failure
@@ -240,6 +292,27 @@ Record the replay from the fixed overhead camera at `(0, 0.2, 0)`, looking at
 /isaac-sim/python.sh simulation/scripts/replay_planned_motion.py --record-video \
   --planned-motion data/processed/simulation/task_20260730_103856_ball_picking/trial_000012/planned_motion.csv
 ```
+
+Replay now includes a visible pick-place task object by default. Useful flags:
+
+```bash
+# disable object rendering
+--no-task-object
+
+# randomly spawn object on tabletop (around z=-0.9) and tune appearance
+--task-object-spawn-z -0.98 \\
+--task-object-spawn-xy-range 0.18 0.12 \
+--task-object-seed 123 \
+--task-object-size 0.05 \
+--task-object-color 0.95 0.35 0.10 \
+
+# optional: attach object to hand while grasping
+--task-object-follow-grasp \
+--task-object-offset 0.0 0.0 -0.06
+```
+
+If `--task-object-spawn-z` is omitted, replay now auto-places the object on the
+tabletop using table height and object size.
 
 If the opposite side is needed, use `--camera-pos 0 -0.2 0`. The default video is
 written next to the plan as `planned_motion_overhead.mp4`.

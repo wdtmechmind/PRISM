@@ -1,0 +1,229 @@
+{
+  "source_plan": "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260805_163433_realsense_assembly/trial_000001/planned_motion.csv",
+  "robot": {
+    "model": "AUBO i5 + MechHand (left hand)",
+    "arm_joint_order": [
+      "shoulder_joint",
+      "upperArm_joint",
+      "foreArm_joint",
+      "wrist1_joint",
+      "wrist2_joint",
+      "wrist3_joint"
+    ],
+    "joint_units": "radians",
+    "time_column": "t_sec",
+    "time_units": "seconds, relative to trajectory start",
+    "urdf": "/mnt/projects-8tb/PRISM/simulation/assets/aubo_i5_mechhand/aubo_i5_mechhand.urdf"
+  },
+  "start_pose": {
+    "arm_q": [
+      -0.056108492,
+      -0.992613466,
+      1.898521879,
+      -2.53833113,
+      2.036471296,
+      1.646731839
+    ],
+    "note": "jog the arm here and confirm before streaming; the trajectory assumes this exact start"
+  },
+  "end_pose": {
+    "arm_q": [
+      0.049656568,
+      -1.021550909,
+      1.831014593,
+      -2.201001224,
+      2.327343081,
+      2.193709237
+    ]
+  },
+  "trajectory": {
+    "frames": 9005,
+    "duration_s": 218.279,
+    "rate_hz": 125.0,
+    "resampled_from_frames": 13972,
+    "smoothing_window_s": 0.08,
+    "time_scale": 0.33,
+    "speed_cap_rad_s": {
+      "shoulder_joint": 1.57,
+      "upperArm_joint": 1.57,
+      "foreArm_joint": 1.57,
+      "wrist1_joint": 1.57,
+      "wrist2_joint": 1.57,
+      "wrist3_joint": 1.57
+    },
+    "peak_joint_speed_rad_s": {
+      "shoulder_joint": 0.5662,
+      "upperArm_joint": 0.5215,
+      "foreArm_joint": 0.5883,
+      "wrist1_joint": 1.0728,
+      "wrist2_joint": 1.4593,
+      "wrist3_joint": 1.4611
+    },
+    "peak_joint_speed_before_smoothing_rad_s": {
+      "shoulder_joint": 27.45,
+      "upperArm_joint": 17.04,
+      "foreArm_joint": 36.32,
+      "wrist1_joint": 54.93,
+      "wrist2_joint": 123.52,
+      "wrist3_joint": 62.14
+    }
+  },
+  "hand": {
+    "gesture_events": [
+      {
+        "t_sec": 0.001225,
+        "gesture_id": 2,
+        "rog": "1",
+        "pose": "five_open"
+      },
+      {
+        "t_sec": 3.665679,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 6.759195,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 10.510988,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 12.973207,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 17.746989,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 21.116052,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 25.970323,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 26.020665,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 26.076663,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 30.787956,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 41.401958,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 45.440591,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 49.081894,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 52.472816,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 59.556739,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 60.818372,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      },
+      {
+        "t_sec": 62.438045,
+        "gesture_id": 5,
+        "rog": "4",
+        "pose": "two_grasp_b"
+      },
+      {
+        "t_sec": 66.843271,
+        "gesture_id": 6,
+        "rog": "5",
+        "pose": "two_open_b"
+      }
+    ],
+    "gesture_id_to_pose": {
+      "1": "five_grasp",
+      "2": "five_open",
+      "3": "two_grasp_a",
+      "4": "two_open_a",
+      "5": "two_grasp_b",
+      "6": "two_open_b",
+      "7": "three_grasp_a",
+      "8": "three_open_a",
+      "9": "three_grasp_b",
+      "10": "three_open_b",
+      "11": "five_sequence",
+      "12": "thumb_in",
+      "13": "thumb_out",
+      "14": "index_point",
+      "15": "index_press",
+      "16": "index_single_click",
+      "17": "index_double_click"
+    },
+    "protocol": "MechHand V2/V3 socket, raw command @ROG<gesture_id-1>&"
+  },
+  "frame_convention": {
+    "led_forward": [
+      "red",
+      "blue"
+    ],
+    "led_right": [
+      "yellow",
+      "green"
+    ],
+    "mount_correction_deg": 45.0,
+    "mount_correction_axis": "right",
+    "note": "poses were converted from capture-rig mounting to arm-flange mounting"
+  },
+  "checks": {
+    "ik_success": "13972/13972",
+    "ik_error_m_mean": 0.002493,
+    "ik_error_m_max": 0.004999,
+    "joint_limit_violations": {},
+    "problems": []
+  }
+}

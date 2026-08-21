@@ -1,0 +1,38 @@
+{
+  "base_from_world": [
+    [
+      6.123233995736766e-17,
+      -1.0,
+      0.0,
+      0.5013567107819216
+    ],
+    [
+      1.0,
+      6.123233995736766e-17,
+      0.0,
+      -0.01386058067198659
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.7693049642243773
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "source": "fit_base_from_world",
+  "yaw_deg": 90.0,
+  "target_centroid_base": [
+    0.38,
+    0.0,
+    0.05
+  ],
+  "trajectories": [
+    "/mnt/projects-8tb/PRISM/data/processed/simulation/task_20260805_163433_realsense_assembly/trial_000001/corrected_trajectory.csv"
+  ]
+}
