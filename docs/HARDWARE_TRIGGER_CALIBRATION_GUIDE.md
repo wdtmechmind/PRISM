@@ -303,6 +303,8 @@ python3 /opt/MVS/Samples/64/Python/General/Recording/CharucoVisualize4Cam.py \
 
 ## 8. 一套完整的推荐执行顺序
 
+本指南的相机标定流程与 UR3 replay 流程相互独立。当前 replay 脚本版本说明见项目 [README.md](../README.md) 第 10 节；不要把旧版日志中的 clearance-aware IK、IK cache 或 `servoJ` 描述用于判断当前版本是否完成安全预检。
+
 ### 第 1 步：采集
 
 ```bash

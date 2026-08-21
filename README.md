@@ -339,7 +339,7 @@ python3 tools/run_ur3_replay.py \
 data/replay_bundles/ur3/task_20260820_155002_grasp-demo/trial_000002/
 ```
 
-其中包含 `base_trajectory.csv`、`sdk_commands.csv`、`manifest.json`，preflight 后还会生成 `ik_plan_cache_wrist.npz`。部署级 wrist_3 标定保存在 `configs/deployment/ur3_wrist_mount.json`，同一套 UR3 与机械手安装可跨 trial 复用。
+其中包含 `base_trajectory.csv`、`sdk_commands.csv`、`manifest.json`。部署级 wrist_3 标定保存在 `configs/deployment/ur3_wrist_mount.json`，同一套 UR3 与机械手安装可跨 trial 复用；当前版本不会生成 IK 规划缓存。
 
 常用覆盖参数可直接附加在统一命令后，例如：
 
@@ -385,6 +385,8 @@ data/raw/task_20260820_155002_grasp-demo/trial_000002/trajectory/rigid_pose_6d.c
 该文件中的 XYZ/RPY 表示相机观测到的 `led_base_link`，不包含 `-45°` 真机安装补偿。
 
 ### 10.2 生成 UR3 Base bundle
+
+`run_ur3_replay.py` 会先调用 `transform_cam_trajectory_to_base.py`，使用 `--handeye` 指定的 `base_from_cam0` 将轨迹转换到 UR3 Base。当前版本同时支持 `--base-offset` 和语义轴安装角补偿；补偿结果会写入 bundle 的 `manifest.json`。
 
 以下命令显式指定：
 
@@ -462,19 +464,18 @@ python3 tools/replay_ur3_base_trajectory.py \
   --skip-hand
 ```
 
-该命令不会连接 UR3，也不会发送手部命令。当前数据预期输出约为：
+该命令不会连接 UR3，也不会发送手部命令。当前底层执行器只检查 CSV 是否可读并打印轨迹摘要；它不会执行 IK、连杆净空或关节速度预检。当前数据预期输出约为：
 
 ```text
-2749 source -> 25972 servo frames
-scaled duration: 207.760 s
-max linear step/speed: 0.7 mm / 0.082 m/s
-max angular step/speed: 0.41 deg / 51.07 deg/s
-DRY RUN: no robot motion and no SDK command sent
+trajectory: 2737 frames, 13.851 s
+DRY RUN: no robot motion and no SDK command sent; add --execute
 ```
 
 ### 10.4 IK preflight：连接但不运动
 
-本地检查通过后，连接 UR3 并抽样检查整段 IK：
+当前版本的 preflight 只对第一帧调用 UR3 控制器的 `getInverseKinematics`，确认首帧位姿可求 IK，然后退出；不会执行整段多分支 IK、连杆净空、关节速度或 `moveJ` 路径安全检查，也不会生成 IK cache。
+
+连接 UR3，仅检查首帧 IK：
 
 ```bash
 python3 tools/replay_ur3_base_trajectory.py \
@@ -490,16 +491,18 @@ python3 tools/replay_ur3_base_trajectory.py \
   --ik-preflight-only
 ```
 
-该模式会建立 RTDE Control/Receive 连接并启动 ur_rtde 控制脚本，但在 `moveJ` 和 `servoJ` 之前退出，不会移动机器人。成功标志：
+该模式会建立 RTDE Control 连接并调用首帧 `getInverseKinematics`，随后在任何 `moveJ` 或 `servoL` 前退出，不会移动机器人。成功标志：
 
 ```text
-IK/clearance preflight passed; no robot motion has occurred yet.
-IK PREFLIGHT ONLY: exiting before moveJ and servoJ.
+IK preflight passed; no robot motion has occurred.
+IK preflight passed; no robot motion has occurred.
 ```
 
 若出现 `Failed to start control script`，检查是否存在其他 RTDE 客户端、机器人是否处于 `RUNNING/NORMAL`、PolyScope 程序是否停止，然后重新连接。
 
 ### 10.5 只回放 UR3
+
+当前执行器使用首帧 IK 后 `moveJ` 到起点，再用 `servoL` 发送笛卡尔轨迹。下面的 `--min-link-clearance`、`--link-radius`、`--max-source-joint-step-deg`、`--max-joint-speed` 参数仅为兼容旧版命令接口，当前版本不会执行对应的安全规划。真实执行前必须人工确认整段轨迹、起点路径、TCP 配置和工作区安全。
 
 确认以下条件后才执行：
 
@@ -524,73 +527,15 @@ python3 tools/replay_ur3_base_trajectory.py \
   --execute
 ```
 
-执行顺序为：
+当前版本不生成或读取 IK 规划缓存。`--replan-ik` 参数仅为旧命令兼容保留。
 
-1. 用多个 shoulder/elbow/wrist seed 求不同 IK 分支；
-2. 用 UR3 CB3 nominal DH 计算各移动连杆相对 Base `z=0` 的最低高度；
-3. 扣除 `--link-radius` 后，选择整段最小净空最大的连续分支；
-4. 检查当前关节到起始关节的 `moveJ` 插值路径净空；
-5. `moveJ` 到选定分支的第一帧并验证完整 6D TCP；
-6. 将选中的关节轨迹插值到 125 Hz，以 `servoJ` 回放。
+### 10.6 版本一致性说明
 
-使用 `servoJ` 是必要的：若继续使用 `servoL`，控制器可能在内部重新选择另一套 IK 分支，无法保证沿预检选中的高净空分支运动。
-
-当前 trial 按新的快速配置 `--time-scale 15 --max-joint-speed 1.2` 预期的 preflight 结果：
-
-```text
-IK branch minimum clearances: 73.6 mm, 25.2 mm, -92.0 mm
-selected IK branch clearance: 73.6 mm
-planned max joint speed: ~0.840 rad/s (wrist_3 at source t=6.631 s)
-initial moveJ path clearance: 111.9 mm
-IK/clearance preflight passed; no robot motion has occurred yet.
-```
-
-### 10.6 IK 规划缓存
-
-`--ik-preflight-only` 首次规划成功后会保存：
-
-```text
-使用 wrist 标定：<bundle-dir>/ik_plan_cache_wrist.npz
-不使用 wrist 标定：<bundle-dir>/ik_plan_cache.npz
-```
-
-缓存包含源帧关节轨迹、`base_trajectory.csv` 的 SHA-256、机器人 IP、规划版本、候选分支净空和规划参数。再次运行 preflight 或 `--execute` 时会自动加载，输出：
-
-```text
-IK cache seeded-check max joint error: 0.000000 rad
-loaded IK cache: .../ik_plan_cache_wrist.npz
-```
-
-加载缓存时仍会：
-
-- 抽样调用 UR 控制器 IK，确认目标位姿与缓存关节解一致；
-- 按当前参数重新检查关节连续性、连杆净空和关节速度；
-- 根据机器人当前关节重新检查到起点的 `moveJ` 路径净空。
-
-因此缓存只省略整段多分支 IK 搜索，不绕过安全门控。`base_trajectory.csv` 内容、机器人 IP 或缓存版本变化时缓存自动失效。
-
-强制重新规划并覆盖缓存：
-
-```bash
-python3 tools/replay_ur3_base_trajectory.py \
-  --bundle-dir data/replay_bundles/ur3/task_20260820_155002_grasp-demo/trial_000002 \
-  --robot-ip 192.168.1.102 \
-  --time-scale 15 \
-  --rate-hz 125 \
-  --min-link-clearance 0.01 \
-  --link-radius 0.04 \
-  --max-source-joint-step-deg 30 \
-  --max-joint-speed 1.2 \
-  --skip-hand \
-  --ik-preflight-only \
-  --replan-ik
-```
-
-使用其他缓存路径：`--ik-cache /path/to/plan.npz`。
+`run_ur3_replay.py`、`transform_cam_trajectory_to_base.py` 和 `replay_ur3_base_trajectory.py` 必须来自同一版本。若包装器传入底层脚本未定义的参数，会在运动前直接失败。当前版本已经统一了参数解析，但尚未恢复旧版的 clearance-aware IK；恢复该功能前，不应依据 `--min-link-clearance` 或 `--max-joint-speed` 的日志判断轨迹已通过完整安全预检。
 
 ### 10.7 标定 wrist_3 安装角偏差
 
-标定工具复用已保存的 `ik_plan_cache.npz`。它先回放缓存关节轨迹，你在合适时刻输入 `p` 回车暂停；暂停后只允许低速调整最后一个关节 `wrist_3`，前五个关节保持不变。
+当前 checkout 的 `calibrate_ur3_wrist_mount.py` 依赖完整 replay 版提供的 IK cache 和净空规划接口；当前 182 行底层执行器尚未提供这些接口。因此本节描述的基于缓存轨迹的交互式 wrist 标定暂不可用，不应按下面的旧命令执行。
 
 先 dry-run：
 
@@ -641,7 +586,7 @@ cancel          取消，不写文件
 --pause-time 5.0
 ```
 
-保存后生成：
+完整 replay 版本恢复后，保存结果会生成：
 
 ```text
 <bundle-dir>/wrist_mount_calibration.json
@@ -652,12 +597,11 @@ cancel          取消，不写文件
 
 这类情况通常不需要更换物理安装角。只有整段 wrist_3 跨度本身接近或超过机械可用范围、或其他腕关节也同时接近限位时，才需要重新选择 IK 分支或调整物理安装。交互命令默认拒绝超出 `[-360°,360°]` 的目标；可通过 `--wrist3-lower-deg/--wrist3-upper-deg` 修改软件边界，但不应超过机器人的实际安全限制。
 
-后续 replay 会自动：
+以下内容属于尚未恢复的完整 replay 版本行为，当前版本不会执行：
 
-1. 将标定角作为末端局部 Z 轴旋转应用到整段 TCP 姿态；
-2. 加载 `ik_plan_cache_wrist.npz`；
-3. 重新执行 seeded-IK、净空、速度和当前 moveJ 路径检查；
-4. 不再执行整段多分支 IK 搜索。
+1. 加载 `ik_plan_cache_wrist.npz`；
+2. 执行 seeded-IK、净空、速度和当前 moveJ 路径检查；
+3. 使用缓存的整段关节轨迹回放。
 
 若要暂时忽略标定，使用 `--no-wrist-calibration`。指定其他标定文件使用 `--wrist-calibration PATH`。
 
@@ -678,22 +622,18 @@ cancel          取消，不写文件
 ### 10.9 关键参数
 
 - `--time-scale 15`：执行时间放大 15 倍，即以原速度的 $1/15$ 回放；当前轨迹执行约 `207.760 s`，峰值关节速度约 `0.840 rad/s`。
-- `--rate-hz 125`：按 UR3 CB3 控制周期重采样；位置线性插值，姿态四元数 SLERP。
+- `--rate-hz 125`：当前版本仅保留该参数用于兼容旧命令，不执行重采样。
 - `--movej-speed/--movej-acceleration`：移动到第一帧时使用的关节速度和加速度。
-- `--min-link-clearance 0.01`：移动连杆表面必须高于 Base `z=0` 至少 `10 mm`。
-- `--link-radius 0.04`：把移动连杆近似为半径 `40 mm` 的胶囊，用于从中心线高度扣除实体尺寸。
-- `--max-source-joint-step-deg 30`：源轨迹相邻帧任一关节跳变超过 `30°` 时拒绝该 IK 分支。
-- `--max-joint-speed 1.2`：125 Hz 插值后的最大允许关节速度，单位 rad/s。
+- `--min-link-clearance`、`--link-radius`、`--max-source-joint-step-deg`、`--max-joint-speed`：当前版本仅保留用于兼容旧命令，不执行对应安全规划。
 - `--skip-hand`：完全禁用手部命令发送。
 - `--ik-preflight-only`：连接并检查 IK，但在任何运动前退出。
-- `--ik-cache PATH`：指定缓存路径；默认根据是否启用 wrist 标定选择 `<bundle-dir>/ik_plan_cache_wrist.npz` 或 `<bundle-dir>/ik_plan_cache.npz`。
-- `--replan-ik`：忽略已有缓存并重新执行多分支 IK 规划。
+- `--replan-ik`：当前版本仅保留用于兼容旧命令，不执行多分支 IK 规划。
 - `--wrist-calibration PATH`：指定 wrist_3 安装角标定文件。
 - `--no-wrist-calibration`：忽略 bundle 中已有的 wrist 标定。
 - `--execute`：唯一启用真实运动的开关。
 - `--mount-correction-deg -45`：只用于 bundle 生成，不应传给 replay 脚本。
 
-Base 平面净空使用 UR3 CB3 nominal DH 与胶囊近似，只检查机器人本体相对 `z=0` 平面，不包含桌面、相机、线缆、MechHand 外形或其他障碍物，也不能替代现场碰撞评估。固定 Base 到 shoulder 的连杆与安装平面相交是正常现象，因此该固定段不参与净空门控。
+当前版本没有自动 Base 平面净空检查，现场仍必须人工确认桌面、相机、线缆、MechHand 和其他障碍物。
 
 ## 11. 已知边界
 

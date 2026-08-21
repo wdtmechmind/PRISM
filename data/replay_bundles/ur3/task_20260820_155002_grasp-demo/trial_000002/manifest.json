@@ -27,19 +27,18 @@
       1.0
     ]
   ],
-  "base_offset_m": [
-    0.0,
-    0.0,
-    0.0
-  ],
   "input_frame": "cam0",
-  "source_pose_frame": "led_base_link_as_captured",
   "output_frame": "robot_base",
   "position_units": "m",
   "orientation": "UR axis-angle rotation vector, rad",
   "rows": 2737,
   "used_smoothed": true,
   "min_num_leds": 3,
+  "base_offset_m": [
+    0.0,
+    0.0,
+    -0.05
+  ],
   "mount_correction": {
     "applied_during_rigid_reconstruction": false,
     "axis_in_semantic_frame": "right",

@@ -40,6 +40,30 @@ def transform_pose(base_from_cam0: np.ndarray, position: np.ndarray, rpy_deg: np
     return base_from_body[:3, 3], rotation_vector.reshape(3)
 
 
+def semantic_axis_vector(axis: str) -> np.ndarray:
+    vectors = {
+        "forward": np.array([1.0, 0.0, 0.0]),
+        "backward": np.array([-1.0, 0.0, 0.0]),
+        "right": np.array([0.0, 1.0, 0.0]),
+        "left": np.array([0.0, -1.0, 0.0]),
+        "up": np.array([0.0, 0.0, 1.0]),
+        "down": np.array([0.0, 0.0, -1.0]),
+    }
+    return vectors[axis]
+
+
+def apply_mount_correction(rows, axis: str, angle_deg: float):
+    if not angle_deg:
+        return rows
+    correction, _ = cv2.Rodrigues(semantic_axis_vector(axis) * np.radians(angle_deg))
+    corrected = []
+    for row in rows:
+        rotation, _ = cv2.Rodrigues(np.asarray(row[4:7], dtype=np.float64))
+        rotation_vector, _ = cv2.Rodrigues(rotation @ correction)
+        corrected.append((*row[:4], *rotation_vector.reshape(3)))
+    return corrected
+
+
 def resolve_input(args) -> tuple[Path, Path | None]:
     if args.trial_dir:
         trial = args.trial_dir.expanduser().resolve()
@@ -60,6 +84,11 @@ def main() -> int:
     parser.add_argument("--use-smoothed", action="store_true",
                         help="use x_smooth/y_smooth/z_smooth and smooth RPY columns when available")
     parser.add_argument("--min-num-leds", type=int, default=3)
+    parser.add_argument("--base-offset", type=float, nargs=3, default=(0.0, 0.0, 0.0),
+                        metavar=("X", "Y", "Z"))
+    parser.add_argument("--mount-correction-axis", default="right",
+                        choices=("forward", "backward", "left", "right", "up", "down"))
+    parser.add_argument("--mount-correction-deg", type=float, default=0.0)
     args = parser.parse_args()
 
     input_csv, sdk_source = resolve_input(args)
@@ -87,11 +116,13 @@ def main() -> int:
                 continue
             if np.isfinite(position).all() and np.isfinite(rpy).all() and np.isfinite(t):
                 base_position, rotation_vector = transform_pose(base_from_cam0, position, rpy)
+                base_position = base_position + np.asarray(args.base_offset, dtype=np.float64)
                 rows.append((t, *base_position, *rotation_vector))
 
     if len(rows) < 2:
         raise SystemExit("fewer than two valid measured trajectory rows")
     rows.sort(key=lambda item: item[0])
+    rows = apply_mount_correction(rows, args.mount_correction_axis, args.mount_correction_deg)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_csv = output_dir / "base_trajectory.csv"
@@ -116,6 +147,13 @@ def main() -> int:
         "rows": len(rows),
         "used_smoothed": args.use_smoothed,
         "min_num_leds": args.min_num_leds,
+        "base_offset_m": list(args.base_offset),
+        "mount_correction": {
+            "applied_during_rigid_reconstruction": False,
+            "axis_in_semantic_frame": args.mount_correction_axis,
+            "angle_deg": args.mount_correction_deg,
+            "applied_during_base_conversion": bool(args.mount_correction_deg),
+        },
         "handeye_translation_rmse_m": handeye.get("translation_rmse_m"),
         "handeye_rotation_rmse_deg": handeye.get("rotation_rmse_deg"),
     }

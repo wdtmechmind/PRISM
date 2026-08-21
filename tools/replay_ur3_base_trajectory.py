@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import socket
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 
@@ -57,6 +59,16 @@ def connect_hand(ip: str, port: int, timeout: float):
     return sock
 
 
+def apply_local_wrist_rotation(trajectory: np.ndarray, offset_rad: float) -> np.ndarray:
+    corrected = trajectory.copy()
+    correction, _ = cv2.Rodrigues(np.array([0.0, 0.0, offset_rad]))
+    for index, row in enumerate(corrected):
+        rotation, _ = cv2.Rodrigues(row[4:7])
+        rotation_vector, _ = cv2.Rodrigues(rotation @ correction)
+        corrected[index, 4:7] = rotation_vector.reshape(3)
+    return corrected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-dir", required=True, type=Path)
@@ -78,6 +90,14 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="enable real UR3 and hand execution")
     parser.add_argument("--skip-hand", action="store_true")
     parser.add_argument("--hand-timeout", type=float, default=3.0)
+    parser.add_argument("--wrist-calibration", type=Path, default=None)
+    parser.add_argument("--ik-preflight-only", action="store_true")
+    parser.add_argument("--rate-hz", type=float, default=125.0)
+    parser.add_argument("--min-link-clearance", type=float, default=0.01)
+    parser.add_argument("--link-radius", type=float, default=0.04)
+    parser.add_argument("--max-source-joint-step-deg", type=float, default=30.0)
+    parser.add_argument("--max-joint-speed", type=float, default=1.2)
+    parser.add_argument("--replan-ik", action="store_true")
     args = parser.parse_args()
 
     if (args.speed <= 0 or args.acceleration <= 0 or args.time_scale <= 0
@@ -85,11 +105,20 @@ def main() -> int:
         parser.error("speed, acceleration, movej-speed, movej-acceleration and time-scale must be positive")
     bundle = args.bundle_dir.expanduser().resolve()
     trajectory = load_trajectory(bundle / "base_trajectory.csv")
+    if args.wrist_calibration is not None:
+        with args.wrist_calibration.expanduser().resolve().open("r", encoding="utf-8") as handle:
+            wrist = json.load(handle)
+        offset_rad = float(wrist.get("wrist3_offset_rad", 0.0))
+        trajectory = apply_local_wrist_rotation(trajectory, offset_rad)
+        print("wrist mount calibration: %.3f deg (%s)" %
+              (np.degrees(offset_rad), args.wrist_calibration.expanduser().resolve()))
     sdk_events = [] if args.skip_hand else load_sdk_events(bundle / "sdk_commands.csv")
-    print("trajectory: %d frames, %.3f s" % (len(trajectory), trajectory[-1, 0] - trajectory[0, 0]))
+    source_duration = float(trajectory[-1, 0] - trajectory[0, 0])
+    print("trajectory: %d frames, %.3f s source -> %.3f s scaled" %
+          (len(trajectory), source_duration, source_duration * args.time_scale))
     print("hand events: %d -> %s:%d" % (len(sdk_events), args.hand_ip, args.hand_port))
     print("start TCP pose: %s" % trajectory[0, 1:])
-    if not args.execute:
+    if not args.execute and not args.ik_preflight_only:
         print("DRY RUN: no robot motion and no SDK command sent; add --execute")
         return 0
 
@@ -107,6 +136,9 @@ def main() -> int:
         start_joints = control.getInverseKinematics(start_pose)
         if start_joints is None or len(start_joints) != 6:
             raise RuntimeError("UR3 inverse kinematics failed for the first trajectory pose")
+        if args.ik_preflight_only:
+            print("IK preflight passed; no robot motion has occurred.")
+            return 0
         print("moving UR3 with moveJ to trajectory start ...", flush=True)
         movej_ok = control.moveJ(
             [float(value) for value in start_joints],
@@ -122,12 +154,12 @@ def main() -> int:
         start_wall = time.monotonic()
         event_index = 0
         for row_index, row in enumerate(trajectory):
-            target_time = (float(row[0]) - float(trajectory[0, 0])) / args.time_scale
+            target_time = (float(row[0]) - float(trajectory[0, 0])) * args.time_scale
             while time.monotonic() - start_wall < target_time:
                 time.sleep(min(0.002, max(0.0001, target_time - (time.monotonic() - start_wall))))
             elapsed = time.monotonic() - start_wall
             while event_index < len(sdk_events):
-                event_time = (sdk_events[event_index][0] - float(trajectory[0, 0])) / args.time_scale
+                event_time = (sdk_events[event_index][0] - float(trajectory[0, 0])) * args.time_scale
                 if event_time > elapsed:
                     break
                 _, command, action = sdk_events[event_index]
@@ -144,7 +176,7 @@ def main() -> int:
                 source_dt = 0.008
             # UR3 CB3 servo loop is normally run at 125 Hz; do not issue
             # commands faster than the controller can consume reliably.
-            servo_dt = max(0.008, min(0.1, source_dt / args.time_scale))
+            servo_dt = max(0.008, min(0.1, source_dt * args.time_scale))
             control.servoL(
                 pose,
                 args.speed,
